@@ -122,6 +122,21 @@ The bundled [`SKILL.md`](./SKILL.md) tells the agent when to invoke it, sizing r
 | Image edits (`/v1/images/edits`) | ❌ not exposed yet | open an issue if you need this |
 | Speed | typical 15–40 s per image | streamed end-to-end |
 
+## Concurrency
+
+You can fire multiple `chatgpt-imagegen` processes in parallel — the ChatGPT subscription backend handles concurrent `image_generation` calls fine. Measured on a Plus account, **4 simultaneous requests all returned 200**, total wall time ≈ slowest single (~27s), no serialization, no 429s.
+
+```bash
+# Fire 4 in parallel from a shell:
+for p in apple sky tree sun; do
+  chatgpt-imagegen "a tiny $p icon, flat vector, white background" \
+    -o "icons/$p.png" --quiet &
+done
+wait
+```
+
+Caveat: subscription quota is shared with the ChatGPT web app and Codex CLI. Don't run sustained batches (>10 images/min) — you'll eventually hit per-day rate limits. For bulk batches, use the official `/v1/images/generations` API with an `OPENAI_API_KEY`.
+
 ## When NOT to use this — use the API instead
 
 If any of these apply, this tool is the wrong fit:

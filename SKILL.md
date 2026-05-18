@@ -79,8 +79,9 @@ The script prints **just the saved path on stdout** when `--quiet` is set; progr
 
 - **Image quality** is chosen by the backend; this skill has no `--quality` flag, and the subscription path does not honour explicit quality requests reliably. Don't promise a specific quality level to the user. If they need explicit `quality=high`, route them to the official `/v1/images/generations` API with their own `OPENAI_API_KEY`.
 - `background: transparent` is **not supported** on the subscription path.
-- A single image takes **15–40 s**. Don't fire many calls in parallel.
-- Subscription quota is **shared** with the user's interactive ChatGPT use. Don't bulk-generate without permission.
+- A single image takes **15–40 s**.
+- **Parallel execution is supported** — the backend handles ≥4 concurrent requests with no serialization or 429s on a Plus account. If the user asks for several distinct assets, you may fire `chatgpt-imagegen` in parallel (e.g. shell `&` + `wait`). Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
+- Subscription quota is **shared** with the user's interactive ChatGPT use. Don't bulk-generate (>10 images / minute sustained) without permission — you'll hit per-day caps.
 
 ## Error handling
 
