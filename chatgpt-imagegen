@@ -1,0 +1,331 @@
+#!/usr/bin/env python3
+"""chatgpt-imagegen — generate images using your ChatGPT subscription, no API key.
+
+Talks directly to ChatGPT's internal Responses endpoint (`chatgpt.com/backend-api/codex/responses`)
+with the `image_generation` tool enabled, reusing the OAuth token from `~/.codex/auth.json`
+created by `codex login`. Zero dependencies — Python stdlib only.
+
+Usage:
+    chatgpt-imagegen "a watercolor cat"
+    chatgpt-imagegen "logo of a coffee shop" -o brand/logo.png --size 1024x1024
+    chatgpt-imagegen "hero banner" -o web/hero.png --size 1536x1024
+
+Setup (one-time):
+    1. `npm i -g @openai/codex` and run `codex login` (signs in to ChatGPT).
+    2. Done. There is no second step.
+
+Project: https://github.com/leeguooooo/chatgpt-imagegen
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+from pathlib import Path
+
+CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
+OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
+OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # Codex CLI's published client id
+FALLBACK_VERSION = "0.130.0"
+FALLBACK_UA = f"codex_cli_rs/{FALLBACK_VERSION} (Mac OS 26.0.1; arm64) chatgpt-imagegen"
+AUTH_PATH = Path.home() / ".codex" / "auth.json"
+VERSION_PATH = Path.home() / ".codex" / "version.json"
+
+
+# ---------- auth ----------
+
+def _load_auth() -> dict:
+    if not AUTH_PATH.exists():
+        sys.exit(
+            f"~/.codex/auth.json not found.\n"
+            f"Install Codex CLI (`npm i -g @openai/codex`) and run `codex login` first."
+        )
+    try:
+        return json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        sys.exit(f"failed to parse {AUTH_PATH}: {e}")
+
+
+def _extract_access_token(auth: dict) -> tuple[str | None, str | None, str | None]:
+    """Return (access_token, account_id, refresh_token)."""
+    tokens = auth.get("tokens") or {}
+    access = tokens.get("access_token") if isinstance(tokens, dict) else None
+    account_id = tokens.get("account_id") if isinstance(tokens, dict) else None
+    refresh = tokens.get("refresh_token") if isinstance(tokens, dict) else None
+    # legacy shape: top-level OPENAI_API_KEY (also accepted, but only as last resort).
+    if not access and isinstance(auth.get("OPENAI_API_KEY"), str):
+        access = auth["OPENAI_API_KEY"]
+    return access, account_id, refresh
+
+
+def _refresh_access_token(refresh_token: str, timeout: int = 30) -> dict:
+    data = urllib.parse.urlencode(
+        {
+            "client_id": OAUTH_CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "scope": "openid profile email",
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        OAUTH_TOKEN_URL,
+        data=data,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": FALLBACK_UA,
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _persist_refreshed_auth(original: dict, refreshed: dict) -> None:
+    """Write back the new access_token + refresh_token into ~/.codex/auth.json."""
+    tokens = original.get("tokens")
+    if not isinstance(tokens, dict):
+        tokens = {}
+        original["tokens"] = tokens
+    if isinstance(refreshed.get("access_token"), str):
+        tokens["access_token"] = refreshed["access_token"]
+    if isinstance(refreshed.get("refresh_token"), str):
+        tokens["refresh_token"] = refreshed["refresh_token"]
+    if isinstance(refreshed.get("id_token"), str):
+        tokens["id_token"] = refreshed["id_token"]
+    original["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    AUTH_PATH.write_text(json.dumps(original, indent=2), encoding="utf-8")
+
+
+def _detect_codex_version() -> str:
+    try:
+        if VERSION_PATH.exists():
+            data = json.loads(VERSION_PATH.read_text(encoding="utf-8"))
+            v = data.get("latest_version")
+            if isinstance(v, str) and re.fullmatch(r"\d+\.\d+\.\d+", v):
+                return v
+    except Exception:
+        pass
+    return FALLBACK_VERSION
+
+
+def _build_headers(token: str, account_id: str | None, version: str) -> dict[str, str]:
+    sid = str(uuid.uuid4())
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "Accept": "text/event-stream",
+        "Connection": "Keep-Alive",
+        "version": version,
+        "session_id": sid,
+        "x-client-request-id": sid,
+        "User-Agent": f"codex_cli_rs/{version} (Mac OS 26.0.1; arm64) chatgpt-imagegen",
+        "originator": "codex_cli_rs",
+    }
+    if account_id:
+        headers["chatgpt-account-id"] = account_id
+    return headers
+
+
+# ---------- request ----------
+
+def _build_payload(prompt: str, size: str, output_format: str, model: str) -> dict:
+    user_text = (
+        "Use the image_generation tool to render the following. "
+        f"Request: {prompt}. "
+        f"Output format: {output_format}."
+    )
+    if size and size != "auto":
+        user_text += f" Size: {size}."
+    user_text += " Do not include explanatory text — produce only the image."
+
+    image_tool: dict = {"type": "image_generation", "output_format": output_format}
+    if size and size != "auto":
+        image_tool["size"] = size
+
+    # The Codex backend requires `instructions` to match an allowlisted prompt.
+    # We use a tiny system-style instruction known to be accepted on gpt-5.5.
+    return {
+        "model": model,
+        "stream": True,
+        "instructions": "You are an image generation assistant.",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_text}],
+            }
+        ],
+        "tools": [image_tool],
+        "tool_choice": "auto",
+        "parallel_tool_calls": False,
+        "store": False,
+        "reasoning": {"effort": "low", "summary": "auto"},
+        "include": ["reasoning.encrypted_content"],
+        "text": {"verbosity": "low"},
+    }
+
+
+def _stream(url: str, headers: dict, body: dict, timeout: int):
+    """Yield parsed JSON event dicts from the SSE stream. Raises on non-200."""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    resp = urllib.request.urlopen(req, timeout=timeout)
+    try:
+        for raw in resp:
+            line = raw.decode("utf-8", errors="ignore").rstrip("\n").rstrip("\r")
+            if not line or line.startswith(":") or line.startswith("event:"):
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = line[len("data:") :].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                yield json.loads(data)
+            except Exception:
+                continue
+    finally:
+        resp.close()
+
+
+def _post_for_image(payload: dict, headers: dict, timeout: int, verbose: bool) -> tuple[bytes, dict]:
+    """Returns (image_bytes, item_meta). Raises on failure."""
+    saw_event_types: dict[str, int] = {}
+    image_b64: str | None = None
+    item_meta: dict = {}
+    last_revised_prompt: str = ""
+
+    try:
+        for evt in _stream(CODEX_BACKEND, headers, payload, timeout):
+            t = evt.get("type", "?")
+            saw_event_types[t] = saw_event_types.get(t, 0) + 1
+            if verbose and saw_event_types[t] == 1 and t.startswith("response.image_generation_call"):
+                print(f"   .. {t}", file=sys.stderr)
+            if t == "response.output_item.done":
+                item = evt.get("item")
+                if isinstance(item, dict) and item.get("type") == "image_generation_call":
+                    if isinstance(item.get("result"), str):
+                        image_b64 = item["result"]
+                        item_meta = {k: v for k, v in item.items() if k != "result"}
+                        if isinstance(item.get("revised_prompt"), str):
+                            last_revised_prompt = item["revised_prompt"]
+    except urllib.error.HTTPError as e:
+        body_text = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"HTTP {e.code}: {body_text[:600]}") from None
+
+    if not image_b64:
+        types_seen = ", ".join(sorted(saw_event_types))
+        raise RuntimeError(f"no image returned. events seen: {types_seen}")
+
+    if last_revised_prompt and verbose:
+        print(f"   revised_prompt: {last_revised_prompt[:120]}", file=sys.stderr)
+
+    return base64.b64decode(image_b64), item_meta
+
+
+# ---------- save ----------
+
+def _default_out_path(prompt: str, fmt: str) -> Path:
+    slug = re.sub(r"[^a-z0-9]+", "-", prompt.lower()).strip("-")[:60] or "image"
+    base = Path("assets/generated")
+    base.mkdir(parents=True, exist_ok=True)
+    i = 1
+    while True:
+        candidate = base / (f"{slug}.{fmt}" if i == 1 else f"{slug}-{i}.{fmt}")
+        if not candidate.exists():
+            return candidate
+        i += 1
+
+
+# ---------- main ----------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate an image with your ChatGPT subscription (no API key)."
+    )
+    parser.add_argument("prompt", help="Description of the image to generate")
+    parser.add_argument("-o", "--out", help="Output file path (default: assets/generated/<slug>.<ext>)")
+    parser.add_argument(
+        "--size",
+        default="auto",
+        help="auto | 1024x1024 | 1536x1024 | 1024x1536 | 2048x2048 | 3840x2160 | 2160x3840",
+    )
+    parser.add_argument("--format", default="png", choices=["png", "jpeg", "webp"])
+    parser.add_argument("--model", default=os.environ.get("CHATGPT_IMAGEGEN_MODEL", "gpt-5.5"))
+    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument("--quiet", action="store_true", help="Print only the saved path on stdout")
+    args = parser.parse_args()
+
+    auth = _load_auth()
+    access, account_id, refresh = _extract_access_token(auth)
+    if not access:
+        sys.exit("no access_token in ~/.codex/auth.json — run `codex login`.")
+
+    version = _detect_codex_version()
+    payload = _build_payload(args.prompt, args.size, args.format, args.model)
+
+    if not args.quiet:
+        print(f"-> POST {CODEX_BACKEND}", file=sys.stderr)
+        print(f"   prompt: {args.prompt[:80]}{'…' if len(args.prompt) > 80 else ''}", file=sys.stderr)
+        print(f"   size={args.size} format={args.format} model={args.model} codex_version={version}", file=sys.stderr)
+
+    def _attempt(token: str) -> tuple[bytes, dict]:
+        headers = _build_headers(token, account_id, version)
+        return _post_for_image(payload, headers, args.timeout, verbose=not args.quiet)
+
+    try:
+        image_bytes, meta = _attempt(access)
+    except RuntimeError as e:
+        msg = str(e)
+        # Auto-refresh on 401/403 once.
+        if ("HTTP 401" in msg or "HTTP 403" in msg) and refresh:
+            if not args.quiet:
+                print("   .. access token rejected; refreshing", file=sys.stderr)
+            try:
+                refreshed = _refresh_access_token(refresh)
+            except Exception as re_err:
+                sys.exit(f"token refresh failed: {re_err}")
+            new_access = refreshed.get("access_token")
+            if not isinstance(new_access, str):
+                sys.exit(f"refresh returned no access_token: {refreshed!r}")
+            try:
+                _persist_refreshed_auth(auth, refreshed)
+            except Exception as p_err:
+                if not args.quiet:
+                    print(f"   .. warning: could not persist refreshed token: {p_err}", file=sys.stderr)
+            image_bytes, meta = _attempt(new_access)
+        else:
+            sys.exit(msg)
+
+    out_path = Path(args.out) if args.out else _default_out_path(args.prompt, args.format)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(image_bytes)
+
+    if args.quiet:
+        print(out_path)
+    else:
+        size_info = f"  size={meta.get('size')}" if meta.get("size") else ""
+        quality_info = f"  quality={meta.get('quality')}" if meta.get("quality") else ""
+        print(f"-> saved: {out_path}  ({len(image_bytes):,} bytes){size_info}{quality_info}", file=sys.stderr)
+        print(out_path)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

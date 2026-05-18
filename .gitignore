@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Generated images — never commit by accident
+assets/generated/
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Keep README/docs images explicitly (use git add -f if needed)
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.webp
