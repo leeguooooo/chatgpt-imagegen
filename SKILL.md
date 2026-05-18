@@ -49,11 +49,11 @@ Useful flags:
 | Flag | When to use |
 | --- | --- |
 | `-o PATH` | Always use when you know where the file should go in the repo. |
-| `--size 1024x1024` | Square icons / logos |
-| `--size 1536x1024` | Landscape hero banners, social cards |
-| `--size 1024x1536` | Portrait covers, mobile splashes |
-| `--size 2048x1152` or `3840x2160` | 2K / 4K landscape (slower) |
-| `--format webp` | Smaller files for web assets when quality is fine |
+| `--size 1024x1024` | Square icons / logos (verified) |
+| `--size 1536x1024` | Landscape hero banners, social cards (verified) |
+| `--size 1024x1536` | Portrait covers, mobile splashes (verified) |
+| `--size 3840x2160` or similar | 4K landscape (forwarded as-is; backend may reject — fall back to a smaller verified size on failure) |
+| `--format webp` | Smaller files for web assets |
 | `--quiet` | Use this in agent contexts so stdout is *only* the saved path |
 
 The script prints **just the saved path on stdout** when `--quiet` is set; progress goes to stderr. Capture it with `OUT=$(chatgpt-imagegen "..." --quiet)`.
@@ -77,7 +77,7 @@ The script prints **just the saved path on stdout** when `--quiet` is set; progr
 
 ## Limits
 
-- `quality: high` is **silently downgraded to `medium`** — tier cap, not a bug.
+- **Image quality** is chosen by the backend; this skill has no `--quality` flag, and the subscription path does not honour explicit quality requests reliably. Don't promise a specific quality level to the user. If they need explicit `quality=high`, route them to the official `/v1/images/generations` API with their own `OPENAI_API_KEY`.
 - `background: transparent` is **not supported** on the subscription path.
 - A single image takes **15–40 s**. Don't fire many calls in parallel.
 - Subscription quota is **shared** with the user's interactive ChatGPT use. Don't bulk-generate without permission.
@@ -87,10 +87,14 @@ The script prints **just the saved path on stdout** when `--quiet` is set; progr
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `~/.codex/auth.json not found` | Codex CLI never signed in | Tell user to run `npm i -g @openai/codex && codex login` |
+| `no ChatGPT OAuth access_token in ~/.codex/auth.json` | Only an API key is present, not a subscription OAuth token | Tell user to run `codex login`; an `OPENAI_API_KEY` value in that file is not a substitute |
 | `HTTP 400 requires a newer version of Codex` | local codex CLI is outdated | Tell user to run `npm i -g @openai/codex@latest`; the script reads version from `~/.codex/version.json` which `codex` updates on launch |
-| `HTTP 401` / `HTTP 403` | OAuth token expired and refresh failed | Tell user to run `codex login` again |
-| `no image returned. events seen: ...` | model decided not to call the tool | rephrase prompt to explicitly say "Use the image_generation tool to render…" |
-| `HTTP 429` | subscription rate-limited | wait a few minutes; do not retry in a loop |
+| `HTTP 401` / `HTTP 403` then refresh works | Token expired and refresh succeeded | No action needed — script auto-retried |
+| `refresh_token is no longer valid — run codex login again` | Refresh token revoked or rotated | Tell user to run `codex login` again |
+| `stream exceeded total timeout budget` | Backend stuck or slow | Retry; if persistent, pass `--timeout 300` |
+| `no image returned. events seen: ...` | Model decided not to call the tool | Rephrase prompt to explicitly say "Use the image_generation tool to render…" |
+| `HTTP 429` | Subscription rate-limited | Wait a few minutes; do not retry in a loop |
+| `warning: --format=X but FILE.Y has .Y extension` | `-o` extension disagrees with `--format` | Fix the path or the format flag; the file IS written with the format you specified |
 
 ## Internals (for maintainers / debugging)
 

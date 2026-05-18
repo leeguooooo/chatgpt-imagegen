@@ -75,11 +75,11 @@ chatgpt-imagegen "<prompt>" [options]
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created |
-| `--size` | `auto` | `1024x1024`, `1536x1024`, `1024x1536`, `2048x2048`, `3840x2160`, `2160x3840` |
+| `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created. A warning is printed when the suffix and `--format` disagree (e.g. `-o foo.jpg --format png`). |
+| `--size` | `auto` | `auto` or any `WIDTHxHEIGHT`. Verified working: `1024x1024`, `1024x1536`, `1536x1024`. Larger sizes are forwarded as-is. |
 | `--format` | `png` | `png` \| `jpeg` \| `webp` |
 | `--model` | `gpt-5.5` | Chat model that hosts the `image_generation` tool |
-| `--timeout` | `180` | Seconds before bailing |
+| `--timeout` | `180` | **Total wall-clock budget** (seconds) for the whole request — not just an idle socket timeout. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines) |
 
 Examples:
@@ -115,10 +115,9 @@ The bundled [`SKILL.md`](./SKILL.md) tells the agent when to invoke it, sizing r
 
 | Parameter | Subscription path | Notes |
 | --- | --- | --- |
-| `size` | ✅ honoured | `auto` / arbitrary `WxH` within model limits |
-| `output_format` | ✅ honoured | `png` / `jpeg` / `webp` |
-| `quality: low/medium/auto` | ✅ honoured | model picks `medium` by default |
-| `quality: high` | ⚠️ silently downgraded to `medium` | subscription tier cap |
+| `--size` | ✅ honoured | `auto` or any `WIDTHxHEIGHT`; backend rejects sizes it doesn't support. Verified working: `auto`, `1024x1024`, `1024x1536`, `1536x1024`. Larger sizes (`2048x*`, `3840x*`) are forwarded as-is — the backend may accept or reject depending on subscription tier. |
+| `--format` | ✅ honoured | `png` / `jpeg` / `webp` |
+| Quality | ⚠️ chosen by the model | The script does not expose a `--quality` flag because the subscription path does not expose reliable quality control — the backend has been observed picking `low` or `medium` on its own and ignoring or downgrading any request for `high`. Use the official `/v1/images/generations` API with `OPENAI_API_KEY` if you need explicit quality control. |
 | `background: transparent` | ❌ not supported on subscription | needs API-key path with `gpt-image-1.5` |
 | Image edits (`/v1/images/edits`) | ❌ not exposed yet | open an issue if you need this |
 | Speed | typical 15–40 s per image | streamed end-to-end |

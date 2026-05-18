@@ -24,12 +24,14 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Any, Iterator
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
@@ -39,10 +41,20 @@ FALLBACK_UA = f"codex_cli_rs/{FALLBACK_VERSION} (Mac OS 26.0.1; arm64) chatgpt-i
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 VERSION_PATH = Path.home() / ".codex" / "version.json"
 
+JsonDict = dict[str, Any]
+
+
+class GatewayError(RuntimeError):
+    """Raised when the upstream HTTP call fails. Carries the status code."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 # ---------- auth ----------
 
-def _load_auth() -> dict:
+def _load_auth() -> JsonDict:
     if not AUTH_PATH.exists():
         sys.exit(
             f"~/.codex/auth.json not found.\n"
@@ -54,19 +66,23 @@ def _load_auth() -> dict:
         sys.exit(f"failed to parse {AUTH_PATH}: {e}")
 
 
-def _extract_access_token(auth: dict) -> tuple[str | None, str | None, str | None]:
-    """Return (access_token, account_id, refresh_token)."""
-    tokens = auth.get("tokens") or {}
-    access = tokens.get("access_token") if isinstance(tokens, dict) else None
-    account_id = tokens.get("account_id") if isinstance(tokens, dict) else None
-    refresh = tokens.get("refresh_token") if isinstance(tokens, dict) else None
-    # legacy shape: top-level OPENAI_API_KEY (also accepted, but only as last resort).
-    if not access and isinstance(auth.get("OPENAI_API_KEY"), str):
-        access = auth["OPENAI_API_KEY"]
+def _extract_access_token(auth: JsonDict) -> tuple[str | None, str | None, str | None]:
+    """Return (access_token, account_id, refresh_token).
+
+    Only honours the OAuth `tokens` block written by `codex login`. An older
+    `OPENAI_API_KEY` field is intentionally NOT used as a fallback — that field
+    is an API key, not a ChatGPT OAuth bearer, and the backend rejects it.
+    """
+    tokens = auth.get("tokens")
+    if not isinstance(tokens, dict):
+        return None, None, None
+    access = tokens.get("access_token") if isinstance(tokens.get("access_token"), str) else None
+    account_id = tokens.get("account_id") if isinstance(tokens.get("account_id"), str) else None
+    refresh = tokens.get("refresh_token") if isinstance(tokens.get("refresh_token"), str) else None
     return access, account_id, refresh
 
 
-def _refresh_access_token(refresh_token: str, timeout: int = 30) -> dict:
+def _refresh_access_token(refresh_token: str, timeout: int = 30) -> JsonDict:
     data = urllib.parse.urlencode(
         {
             "client_id": OAUTH_CLIENT_ID,
@@ -85,12 +101,37 @@ def _refresh_access_token(refresh_token: str, timeout: int = 30) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        # Try to surface the OAuth `error` field without leaking the full body.
+        oauth_err = ""
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict) and isinstance(parsed.get("error"), str):
+                oauth_err = parsed["error"]
+        except Exception:
+            pass
+        if oauth_err == "invalid_grant":
+            raise GatewayError(
+                "refresh_token is no longer valid — run `codex login` again to re-authenticate.",
+                status=e.code,
+            ) from None
+        # Avoid leaking the full response body. Surface only HTTP status and error code.
+        msg = f"token refresh failed: HTTP {e.code}"
+        if oauth_err:
+            msg += f" ({oauth_err})"
+        raise GatewayError(msg, status=e.code) from None
 
 
-def _persist_refreshed_auth(original: dict, refreshed: dict) -> None:
-    """Write back the new access_token + refresh_token into ~/.codex/auth.json."""
+def _persist_refreshed_auth(original: JsonDict, refreshed: JsonDict) -> None:
+    """Atomically rewrite ~/.codex/auth.json with the refreshed tokens.
+
+    Writes a temp file in the same directory with mode 0600, fsyncs it, then
+    os.replace()s it over the original. Survives crashes / disk-full midwrite.
+    """
     tokens = original.get("tokens")
     if not isinstance(tokens, dict):
         tokens = {}
@@ -102,7 +143,24 @@ def _persist_refreshed_auth(original: dict, refreshed: dict) -> None:
     if isinstance(refreshed.get("id_token"), str):
         tokens["id_token"] = refreshed["id_token"]
     original["last_refresh"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    AUTH_PATH.write_text(json.dumps(original, indent=2), encoding="utf-8")
+
+    serialized = json.dumps(original, indent=2).encode("utf-8")
+    AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=".auth.", suffix=".tmp", dir=str(AUTH_PATH.parent))
+    tmp_file = Path(tmp_path)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(serialized)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, AUTH_PATH)
+    except Exception:
+        try:
+            tmp_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
 
 
 def _detect_codex_version() -> str:
@@ -137,7 +195,7 @@ def _build_headers(token: str, account_id: str | None, version: str) -> dict[str
 
 # ---------- request ----------
 
-def _build_payload(prompt: str, size: str, output_format: str, model: str) -> dict:
+def _build_payload(prompt: str, size: str, output_format: str, model: str) -> JsonDict:
     user_text = (
         "Use the image_generation tool to render the following. "
         f"Request: {prompt}. "
@@ -147,7 +205,7 @@ def _build_payload(prompt: str, size: str, output_format: str, model: str) -> di
         user_text += f" Size: {size}."
     user_text += " Do not include explanatory text — produce only the image."
 
-    image_tool: dict = {"type": "image_generation", "output_format": output_format}
+    image_tool: JsonDict = {"type": "image_generation", "output_format": output_format}
     if size and size != "auto":
         image_tool["size"] = size
 
@@ -174,42 +232,85 @@ def _build_payload(prompt: str, size: str, output_format: str, model: str) -> di
     }
 
 
-def _stream(url: str, headers: dict, body: dict, timeout: int):
-    """Yield parsed JSON event dicts from the SSE stream. Raises on non-200."""
+def _stream(
+    url: str,
+    headers: dict[str, str],
+    body: JsonDict,
+    deadline: float,
+) -> Iterator[JsonDict]:
+    """Yield parsed JSON event dicts from the SSE stream.
+
+    Standards-compliant enough for OpenAI's variant:
+      * `:` lines are comments (ignored).
+      * `event:` lines are tracked but unused here.
+      * `data:` lines accumulate into a single payload per event; blank line
+        terminates the event and we yield the parsed JSON.
+      * A `data: [DONE]` payload terminates the stream cleanly.
+      * Total wall-clock budget is enforced via `deadline` (monotonic time).
+    """
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
         headers=headers,
         method="POST",
     )
-    resp = urllib.request.urlopen(req, timeout=timeout)
+    # Initial connect timeout: shorter of remaining budget or 30s.
+    initial = max(1.0, min(30.0, deadline - time.monotonic()))
+    resp = urllib.request.urlopen(req, timeout=initial)
     try:
+        data_buf: list[str] = []
         for raw in resp:
-            line = raw.decode("utf-8", errors="ignore").rstrip("\n").rstrip("\r")
-            if not line or line.startswith(":") or line.startswith("event:"):
+            if time.monotonic() >= deadline:
+                raise GatewayError(
+                    f"stream exceeded total timeout budget; aborting",
+                    status=None,
+                )
+            line = raw.decode("utf-8", errors="ignore").rstrip("\r\n")
+            if line == "":
+                # End of event.
+                if not data_buf:
+                    continue
+                payload = "\n".join(data_buf)
+                data_buf = []
+                if payload == "[DONE]":
+                    return
+                try:
+                    yield json.loads(payload)
+                except Exception:
+                    # Malformed event; keep going but make it visible in verbose mode.
+                    print(
+                        f"   .. warning: skipped malformed SSE payload "
+                        f"({len(payload)} bytes)",
+                        file=sys.stderr,
+                    )
                 continue
-            if not line.startswith("data:"):
+            if line.startswith(":"):
+                continue  # comment / keepalive
+            if line.startswith("event:"):
+                continue  # event type — we infer from payload's "type" field
+            if line.startswith("data:"):
+                # Strip the "data:" prefix and exactly one optional leading space.
+                chunk = line[len("data:") :]
+                if chunk.startswith(" "):
+                    chunk = chunk[1:]
+                data_buf.append(chunk)
                 continue
-            data = line[len("data:") :].strip()
-            if not data or data == "[DONE]":
-                continue
-            try:
-                yield json.loads(data)
-            except Exception:
-                continue
+            # Other field types (id:, retry:, etc.) — ignore silently.
     finally:
         resp.close()
 
 
-def _post_for_image(payload: dict, headers: dict, timeout: int, verbose: bool) -> tuple[bytes, dict]:
-    """Returns (image_bytes, item_meta). Raises on failure."""
+def _post_for_image(
+    payload: JsonDict, headers: dict[str, str], deadline: float, verbose: bool
+) -> tuple[bytes, JsonDict]:
+    """Returns (image_bytes, item_meta). Raises GatewayError on failure."""
     saw_event_types: dict[str, int] = {}
     image_b64: str | None = None
-    item_meta: dict = {}
+    item_meta: JsonDict = {}
     last_revised_prompt: str = ""
 
     try:
-        for evt in _stream(CODEX_BACKEND, headers, payload, timeout):
+        for evt in _stream(CODEX_BACKEND, headers, payload, deadline):
             t = evt.get("type", "?")
             saw_event_types[t] = saw_event_types.get(t, 0) + 1
             if verbose and saw_event_types[t] == 1 and t.startswith("response.image_generation_call"):
@@ -224,16 +325,20 @@ def _post_for_image(payload: dict, headers: dict, timeout: int, verbose: bool) -
                             last_revised_prompt = item["revised_prompt"]
     except urllib.error.HTTPError as e:
         body_text = e.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {e.code}: {body_text[:600]}") from None
+        raise GatewayError(f"HTTP {e.code}: {body_text[:600]}", status=e.code) from None
 
     if not image_b64:
-        types_seen = ", ".join(sorted(saw_event_types))
-        raise RuntimeError(f"no image returned. events seen: {types_seen}")
+        types_seen = ", ".join(sorted(saw_event_types)) or "(none)"
+        raise GatewayError(f"no image returned. events seen: {types_seen}")
 
     if last_revised_prompt and verbose:
         print(f"   revised_prompt: {last_revised_prompt[:120]}", file=sys.stderr)
 
-    return base64.b64decode(image_b64), item_meta
+    try:
+        image_bytes = base64.b64decode(image_b64, validate=True)
+    except Exception:
+        raise GatewayError("backend returned invalid base64 in image_generation_call.result") from None
+    return image_bytes, item_meta
 
 
 # ---------- save ----------
@@ -250,6 +355,28 @@ def _default_out_path(prompt: str, fmt: str) -> Path:
         i += 1
 
 
+def _maybe_warn_extension_mismatch(out_path: Path, fmt: str) -> None:
+    ext = out_path.suffix.lower().lstrip(".")
+    # Map jpg <-> jpeg as equivalent.
+    canon = "jpeg" if ext == "jpg" else ext
+    if canon and canon != fmt:
+        print(
+            f"   .. warning: --format={fmt} but {out_path.name} has .{ext} extension; "
+            f"writing {fmt} bytes anyway",
+            file=sys.stderr,
+        )
+
+
+def _positive_int(value: str) -> int:
+    try:
+        v = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a positive integer: {value!r}")
+    if v <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer: {value!r}")
+    return v
+
+
 # ---------- main ----------
 
 def main() -> int:
@@ -261,56 +388,89 @@ def main() -> int:
     parser.add_argument(
         "--size",
         default="auto",
-        help="auto | 1024x1024 | 1536x1024 | 1024x1536 | 2048x2048 | 3840x2160 | 2160x3840",
+        help="auto | WIDTHxHEIGHT (e.g. 1024x1024, 1536x1024, 1024x1536). "
+             "Forwarded as-is; the backend decides what it accepts.",
     )
     parser.add_argument("--format", default="png", choices=["png", "jpeg", "webp"])
     parser.add_argument("--model", default=os.environ.get("CHATGPT_IMAGEGEN_MODEL", "gpt-5.5"))
-    parser.add_argument("--timeout", type=int, default=180)
+    parser.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=180,
+        help="Total wall-clock budget for the request, in seconds (default: 180).",
+    )
     parser.add_argument("--quiet", action="store_true", help="Print only the saved path on stdout")
     args = parser.parse_args()
 
     auth = _load_auth()
     access, account_id, refresh = _extract_access_token(auth)
     if not access:
-        sys.exit("no access_token in ~/.codex/auth.json — run `codex login`.")
+        sys.exit(
+            "no ChatGPT OAuth access_token in ~/.codex/auth.json. "
+            "Run `codex login` to sign into your ChatGPT subscription. "
+            "(An OPENAI_API_KEY in this file is not a substitute — the backend "
+            "requires a subscription OAuth token.)"
+        )
 
     version = _detect_codex_version()
     payload = _build_payload(args.prompt, args.size, args.format, args.model)
+    deadline = time.monotonic() + args.timeout
 
     if not args.quiet:
         print(f"-> POST {CODEX_BACKEND}", file=sys.stderr)
         print(f"   prompt: {args.prompt[:80]}{'…' if len(args.prompt) > 80 else ''}", file=sys.stderr)
-        print(f"   size={args.size} format={args.format} model={args.model} codex_version={version}", file=sys.stderr)
+        print(
+            f"   size={args.size} format={args.format} model={args.model} "
+            f"codex_version={version} timeout={args.timeout}s",
+            file=sys.stderr,
+        )
 
-    def _attempt(token: str) -> tuple[bytes, dict]:
+    def _attempt(token: str) -> tuple[bytes, JsonDict]:
         headers = _build_headers(token, account_id, version)
-        return _post_for_image(payload, headers, args.timeout, verbose=not args.quiet)
+        return _post_for_image(payload, headers, deadline, verbose=not args.quiet)
 
     try:
         image_bytes, meta = _attempt(access)
-    except RuntimeError as e:
-        msg = str(e)
-        # Auto-refresh on 401/403 once.
-        if ("HTTP 401" in msg or "HTTP 403" in msg) and refresh:
+    except GatewayError as e:
+        # Auto-refresh on 401/403 once, then retry. Any other error → fail clean.
+        if e.status in (401, 403) and refresh:
             if not args.quiet:
                 print("   .. access token rejected; refreshing", file=sys.stderr)
             try:
                 refreshed = _refresh_access_token(refresh)
+            except GatewayError as re_err:
+                sys.exit(str(re_err))
             except Exception as re_err:
-                sys.exit(f"token refresh failed: {re_err}")
+                # Never include the refresh response body / token material in the message.
+                sys.exit(f"token refresh failed: {type(re_err).__name__}")
             new_access = refreshed.get("access_token")
-            if not isinstance(new_access, str):
-                sys.exit(f"refresh returned no access_token: {refreshed!r}")
+            if not isinstance(new_access, str) or not new_access:
+                # Avoid leaking the dict (may contain id_token / refresh_token).
+                present = sorted(k for k in refreshed if isinstance(refreshed.get(k), str))
+                sys.exit(
+                    f"refresh response missing access_token "
+                    f"(present string fields: {present})"
+                )
             try:
                 _persist_refreshed_auth(auth, refreshed)
             except Exception as p_err:
-                if not args.quiet:
-                    print(f"   .. warning: could not persist refreshed token: {p_err}", file=sys.stderr)
-            image_bytes, meta = _attempt(new_access)
+                # Always warn on persistence failure, even in quiet mode — stale
+                # tokens on next run will look like a mysterious failure otherwise.
+                print(
+                    f"warning: could not persist refreshed token to {AUTH_PATH}: "
+                    f"{type(p_err).__name__}: {p_err}",
+                    file=sys.stderr,
+                )
+            try:
+                image_bytes, meta = _attempt(new_access)
+            except GatewayError as retry_err:
+                sys.exit(str(retry_err))
         else:
-            sys.exit(msg)
+            sys.exit(str(e))
 
     out_path = Path(args.out) if args.out else _default_out_path(args.prompt, args.format)
+    if args.out and not args.quiet:
+        _maybe_warn_extension_mismatch(out_path, args.format)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(image_bytes)
 
