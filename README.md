@@ -165,6 +165,15 @@ If you need an **HTTP gateway** (so any OpenAI SDK / LangChain / OpenWebUI / Dif
 | Run on my laptop, occasional images, agent-driven | **this repo** (chatgpt-imagegen) |
 | Multi-app server, team-shared, OpenAI-SDK compatible | [**agent-cli-to-api**](https://github.com/leeguooooo/agent-cli-to-api) |
 
+## Deep dive (blog)
+
+Long-form writeups about why this exists and how the subscription path works under the hood:
+
+- [技术拆解：把 ChatGPT 订阅转成生图 API（300 行 Python）](https://blog.misonote.com/zh/posts/chatgpt-subscription-image-api/) — full OAuth + Responses API + SSE walkthrough (zh).
+- [可视化速览：一图看懂](https://blog.misonote.com/zh/posts/chatgpt-imagegen-visual-guide/) — capability matrix, flow diagram, "when not to use" panel (zh).
+
+English / Japanese auto-translations live at the same URLs under `/en/` and `/ja/`.
+
 ## How it works (technical)
 
 The Codex CLI's built-in `image_gen` skill is implemented as a native Responses-API tool:
