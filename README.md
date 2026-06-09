@@ -83,6 +83,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.2.1`) and exit. |
 
 Examples:
 
