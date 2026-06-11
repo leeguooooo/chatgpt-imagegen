@@ -24,7 +24,22 @@ Auto does **not** fall back to codex if web was reachable but the generation its
 
 ## Prerequisites
 
-**For the default `web` backend:** the user must have **`agent-browser-stealth`** installed (it provides the `agent-browser` / `abs` command) and its extension connected to a Chrome that is signed in to chatgpt.com. The *stealth* fork specifically is required — its real-logged-in-Chrome connect is what passes Cloudflare's bot-detection; a plain `agent-browser` may not. If the CLI errors that the binary is missing, point the user at the `agent-browser` skill / its `install.sh` (`leeguooooo/agent-browser-stealth`). The "Temporary Chat" mode disables image generation, so this backend always opens a *regular* chat.
+**For the default `web` backend:** the user must have **`agent-browser-stealth`** installed (it provides the `agent-browser` / `abs` command) and its extension connected to a Chrome that is signed in to chatgpt.com. The *stealth* fork specifically is required — its real-logged-in-Chrome connect is what passes Cloudflare's bot-detection; a plain `agent-browser` may not. The "Temporary Chat" mode disables image generation, so this backend always opens a *regular* chat.
+
+Setup (point the user here if the CLI errors that the binary is missing, or fall back to `--backend codex`):
+
+```bash
+# 1. Install the CLI (no npm, no token — provides `agent-browser` / `abs`)
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
+# 2. Register the native-messaging host
+agent-browser extension install
+# 3. Add the Chrome extension, then restart Chrome:
+#    https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk
+# 4. Sign in to https://chatgpt.com in that Chrome
+```
+
+- **Repo:** https://github.com/leeguooooo/agent-browser-stealth
+- The `agent-browser` skill (`agent-browser skills get core`) covers the extension-connect flow in depth.
 
 **For the `codex` backend:** the user must have run, **once, ever**:
 
