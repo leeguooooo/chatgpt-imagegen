@@ -4,20 +4,14 @@
 
 **用你的 ChatGPT 订阅生成图片 —— 不需要 `OPENAI_API_KEY`。**
 
-一个零依赖的单文件 Python CLI(同时也是 AI agent skill),用你的 ChatGPT 账号生成图片 —— 在命令行、也给任意 AI agent 用。
+一个零依赖的单文件 Python CLI(同时也是 AI agent skill)—— 一个文件、只用标准库 —— 用你的 ChatGPT 账号生成图片,在命令行、也给任意 AI agent 用。
 
-> **✨ 免费 ChatGPT 账号也能用。** 默认的 `web` 后端走的就是普通 ChatGPT 网页对话,而**免费用户在网页里本来也能生图** —— 所以你不用付费套餐、不用 API key、不用 Codex 也能出图(受免费档每日生图上限约束)。付费套餐只是额度更高而已。
+> **✨ 免费 ChatGPT 账号也能用。** 默认的 `web` 后端走的就是普通 ChatGPT 网页对话,而**免费用户在网页里本来也能生图** —— 所以不用付费套餐、不用 API key、不用 Codex 也能出图(受免费档每日生图上限约束)。付费套餐只是额度更高而已。
 
 ```bash
 chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
 # -> saved: cat.png  (812,344 bytes)  size=1024x1024  quality=medium
 ```
-
-不用起服务,不用代理,不用 API key。一个 Python 文件,只用标准库。
-
-<img src="./docs/example-doodle.png" width="380" alt="出图示例">
-
-<sub>出图示例 —— 本工具生成(要求画一张"故意很烂"的老式画图程序原理图)。</sub>
 
 ---
 
@@ -131,17 +125,8 @@ OUT=$(chatgpt-imagegen "icon" --quiet)
 echo "saved to $OUT"
 ```
 
-## AI agent skill
-
-把仓库放进任意 AI agent 的 skill 目录(Claude Code、Codex Agent、Cursor 等):
-
-```bash
-# Claude Code 示例
-npx skills add leeguooooo/chatgpt-imagegen -g
-# 或直接软链进 ~/.claude/skills/
-```
-
-随附的 [`SKILL.md`](./SKILL.md) 告诉 agent 何时调用、尺寸配方、存哪儿、怎么处理错误。然后对任意兼容 agent 说:*"画一张 xxx 给我看看"* / *"generate a hero banner for the README"*。
+<img src="./docs/example-doodle.png" width="320" alt="出图示例"><br>
+<sub>出图示例 —— 本工具生成(要求画一张"故意很烂"的老式画图程序原理图)。</sub>
 
 ## 能做什么 / 不能做什么
 
@@ -186,25 +171,10 @@ curl https://api.openai.com/v1/images/generations \
   -d '{"model":"gpt-image-2","prompt":"...","size":"1024x1024"}'
 ```
 
-## 想要一个 OpenAI 兼容的 HTTP API?
+## 相关
 
-如果你需要一个 **HTTP 网关**(让任意 OpenAI SDK / LangChain / OpenWebUI / Dify / 你自己的 app 能 `POST /v1/chat/completions` 拿回图)—— 用姊妹项目:
-
-➡️ **[leeguooooo/agent-cli-to-api](https://github.com/leeguooooo/agent-cli-to-api)** —— 把同一个 ChatGPT 订阅 `image_generation` 工具暴露成 OpenAI 兼容的 `/v1/chat/completions` 服务。需要可网络调用、多客户端、或远程主机使用时选它。
-
-| 你想要 | 用 |
-| --- | --- |
-| 在自己电脑上跑、偶尔生图、给 agent 用 | **本仓库**(chatgpt-imagegen) |
-| 多应用服务器、团队共享、OpenAI-SDK 兼容 | [**agent-cli-to-api**](https://github.com/leeguooooo/agent-cli-to-api) |
-
-## 深入(博客)
-
-关于为什么有这个项目、订阅路径底层怎么跑的长文:
-
-- [技术拆解：把 ChatGPT 订阅转成生图 API（300 行 Python）](https://blog.misonote.com/zh/posts/chatgpt-subscription-image-api/) —— 完整的 OAuth + Responses API + SSE 走读(中文)。
-- [可视化速览：一图看懂](https://blog.misonote.com/zh/posts/chatgpt-imagegen-visual-guide/) —— 能力矩阵、流程图、"何时别用"面板(中文)。
-
-英文/日文自动翻译在同一 URL 的 `/en/`、`/ja/` 下。
+- **需要 HTTP API?** [**agent-cli-to-api**](https://github.com/leeguooooo/agent-cli-to-api) 把同一个工具暴露成 OpenAI 兼容的 `/v1/chat/completions` 服务 —— 需要可网络调用、多客户端、团队共享时选它。本仓库面向本地 / agent 使用。
+- **深入(博客):** [为什么有这个项目 + OAuth/SSE 走读](https://blog.misonote.com/zh/posts/chatgpt-subscription-image-api/) · [可视化速览](https://blog.misonote.com/zh/posts/chatgpt-imagegen-visual-guide/)(中文;英/日文在 `/en/`、`/ja/` 下)。
 
 ## 工作原理(技术)
 

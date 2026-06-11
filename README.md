@@ -4,22 +4,16 @@
 
 **Generate images using your ChatGPT subscription — no `OPENAI_API_KEY` needed.**
 
-A tiny, zero-dependency Python CLI (and AI-agent skill) that generates images with your ChatGPT account — on the command line and for any AI agent.
+A tiny, zero-dependency Python CLI (and AI-agent skill) — one file, stdlib only — that generates images with your ChatGPT account, on the command line and for any AI agent.
 
-> **✨ Works on a free ChatGPT account too.** The default `web` backend just drives the normal ChatGPT web chat, where **even free-tier users get image generation** — so you can generate images with no paid plan, no API key, and no Codex (subject to the free tier's daily image limit). Paid plans simply get higher limits.
+> **✨ Works on a free ChatGPT account too.** The default `web` backend just drives the normal ChatGPT web chat, where **even free-tier users get image generation** — so no paid plan, no API key, and no Codex required (subject to the free tier's daily image limit). Paid plans simply get higher limits.
 
 ```bash
 chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
 # -> saved: cat.png  (812,344 bytes)  size=1024x1024  quality=medium
 ```
 
-No server. No proxy. No API key. One Python file, stdlib only.
-
 <img width="1494" height="870" alt="image" src="https://github.com/user-attachments/assets/b48b0563-58a3-41ff-a207-f01eafbf2ccb" />
-
-<img src="./docs/example-doodle.png" width="380" alt="example output">
-
-<sub>Example output — made by this tool (asked for a deliberately awful MS-Paint schematic).</sub>
 
 ---
 
@@ -133,17 +127,8 @@ OUT=$(chatgpt-imagegen "icon" --quiet)
 echo "saved to $OUT"
 ```
 
-## AI-agent skill
-
-Drop the repo into any AI-agent's skill directory (Claude Code, Codex Agent, Cursor, etc.):
-
-```bash
-# Claude Code example
-npx skills add leeguooooo/chatgpt-imagegen -g
-# or symlink directly into ~/.claude/skills/
-```
-
-The bundled [`SKILL.md`](./SKILL.md) tells the agent when to invoke it, sizing recipes, where to save outputs, and how to handle errors. Just ask any compatible agent: *"画一张 xxx 给我看看"* / *"generate a hero banner for the README"*.
+<img src="./docs/example-doodle.png" width="320" alt="example output"><br>
+<sub>Example output — made by this tool (asked for a deliberately awful MS-Paint schematic).</sub>
 
 ## What works / what doesn't
 
@@ -188,25 +173,10 @@ curl https://api.openai.com/v1/images/generations \
   -d '{"model":"gpt-image-2","prompt":"...","size":"1024x1024"}'
 ```
 
-## Want this as an OpenAI-compatible HTTP API?
+## Related
 
-If you need an **HTTP gateway** (so any OpenAI SDK / LangChain / OpenWebUI / Dify / your-own-app can `POST /v1/chat/completions` and get an image back) — use the sister project:
-
-➡️ **[leeguooooo/agent-cli-to-api](https://github.com/leeguooooo/agent-cli-to-api)** — exposes the same ChatGPT-subscription `image_generation` tool as an OpenAI-compatible `/v1/chat/completions` server. Pick that one when you want network-callable, multi-client, or remote-host usage.
-
-| You want | Use |
-| --- | --- |
-| Run on my laptop, occasional images, agent-driven | **this repo** (chatgpt-imagegen) |
-| Multi-app server, team-shared, OpenAI-SDK compatible | [**agent-cli-to-api**](https://github.com/leeguooooo/agent-cli-to-api) |
-
-## Deep dive (blog)
-
-Long-form writeups about why this exists and how the subscription path works under the hood:
-
-- [技术拆解：把 ChatGPT 订阅转成生图 API（300 行 Python）](https://blog.misonote.com/zh/posts/chatgpt-subscription-image-api/) — full OAuth + Responses API + SSE walkthrough (zh).
-- [可视化速览：一图看懂](https://blog.misonote.com/zh/posts/chatgpt-imagegen-visual-guide/) — capability matrix, flow diagram, "when not to use" panel (zh).
-
-English / Japanese auto-translations live at the same URLs under `/en/` and `/ja/`.
+- **Need an HTTP API?** [**agent-cli-to-api**](https://github.com/leeguooooo/agent-cli-to-api) exposes the same tool as an OpenAI-compatible `/v1/chat/completions` server — pick it for network-callable, multi-client, or team-shared use. This repo is for local / agent-driven use.
+- **Deep dives (blog):** [why this exists + OAuth/SSE walkthrough](https://blog.misonote.com/zh/posts/chatgpt-subscription-image-api/) · [visual guide](https://blog.misonote.com/zh/posts/chatgpt-imagegen-visual-guide/) (zh; EN/JA under `/en/` and `/ja/`).
 
 ## How it works (technical)
 
