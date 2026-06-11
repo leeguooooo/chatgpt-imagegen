@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
 """chatgpt-imagegen — generate images using your ChatGPT subscription, no API key.
 
-Talks directly to ChatGPT's internal Responses endpoint (`chatgpt.com/backend-api/codex/responses`)
-with the `image_generation` tool enabled, reusing the OAuth token from `~/.codex/auth.json`
-created by `codex login`. Zero dependencies — Python stdlib only.
+Two backends produce the same kind of bitmap, but bill different buckets:
+
+  * web (default): drives your already-logged-in ChatGPT browser via
+    `agent-browser`, generating on the ChatGPT *conversation* surface. The real
+    browser clears Cloudflare + the sentinel proof-of-work a headless client
+    cannot replicate. This does NOT consume the metered Codex-usage limit —
+    it's the same surface as typing in the app. Needs a logged-in browser open.
+
+  * codex: a headless POST to `chatgpt.com/backend-api/codex/responses` with the
+    `image_generation` tool, reusing the OAuth token from `~/.codex/auth.json`
+    (`codex login`). Fast and dependency-free, but every call bills the metered
+    Codex-usage bucket.
 
 Usage:
-    chatgpt-imagegen "a watercolor cat"
-    chatgpt-imagegen "logo of a coffee shop" -o brand/logo.png --size 1024x1024
-    chatgpt-imagegen "hero banner" -o web/hero.png --size 1536x1024
+    chatgpt-imagegen "a watercolor cat"                       # web backend (default)
+    chatgpt-imagegen "logo" -o brand/logo.png --size 1024x1024
+    chatgpt-imagegen "hero banner" -o web/hero.png --backend codex
 
 Setup (one-time):
-    1. `npm i -g @openai/codex` and run `codex login` (signs in to ChatGPT).
-    2. Done. There is no second step.
+    web backend:   install agent-browser and connect it to your logged-in
+                   Chrome (see the agent-browser skill); be signed in to
+                   chatgpt.com in that browser.
+    codex backend: `npm i -g @openai/codex` and run `codex login`.
 
 Project: https://github.com/leeguooooo/chatgpt-imagegen
 """
@@ -23,6 +34,8 @@ import base64
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -33,7 +46,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
@@ -53,6 +66,20 @@ FALLBACK_UA = f"codex_cli_rs/{FALLBACK_VERSION} (Mac OS 26.0.1; arm64) chatgpt-i
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 VERSION_PATH = Path.home() / ".codex" / "version.json"
 
+# Web backend: drive the real, logged-in ChatGPT browser via agent-browser so
+# image generation runs on the ChatGPT *conversation* surface (the cheap bucket)
+# rather than the codex/responses surface (the metered Codex-usage bucket). The
+# real browser transparently clears Cloudflare + the sentinel proof-of-work that
+# a headless client cannot replicate. See README "Backends" for the trade-off.
+AB_BIN_CANDIDATES = ("agent-browser", "agent-browser-stealth", "abs")
+# A *regular* new chat — NOT a temporary chat. Temporary Chat disables the
+# image_generation tool ("I can't generate images in this temporary chat"),
+# so we must use a normal conversation. Trade-off: each run leaves a chat in
+# history. Pass --keep-tab to inspect it; delete from the UI if you want.
+WEB_NEW_CHAT_URL = "https://chatgpt.com/"
+# Image assets render as <img> whose src points at one of these backend paths.
+WEB_IMG_SRC_RE = r"estuary/content|files/download|oaiusercontent"
+
 JsonDict = dict[str, Any]
 
 
@@ -62,6 +89,16 @@ class GatewayError(RuntimeError):
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+class WebUnavailable(GatewayError):
+    """The web backend can't run at all (agent-browser missing, browser not
+    reachable, or chatgpt.com not logged in) — as opposed to a failure that
+    happens *after* a prompt was successfully submitted.
+
+    Auto-routing treats this as "fall back to codex"; a failure after submit is
+    a plain GatewayError and must NOT silently fall back (that would burn the
+    Codex-usage bucket the web backend exists to spare)."""
 
 
 # ---------- auth ----------
@@ -222,7 +259,13 @@ def _build_headers(token: str, account_id: str | None, version: str) -> dict[str
 
 # ---------- request ----------
 
-def _build_payload(prompt: str, size: str, output_format: str, model: str) -> JsonDict:
+def _build_user_text(prompt: str, size: str, output_format: str) -> str:
+    """Natural-language instruction shared by both backends.
+
+    The web UI has no explicit size/format knobs, so we fold those hints into
+    the prompt exactly the way the codex tool description does — the model
+    reads them and picks the matching aspect ratio.
+    """
     user_text = (
         "Use the image_generation tool to render the following. "
         f"Request: {prompt}. "
@@ -231,6 +274,11 @@ def _build_payload(prompt: str, size: str, output_format: str, model: str) -> Js
     if size and size != "auto":
         user_text += f" Size: {size}."
     user_text += " Do not include explanatory text — produce only the image."
+    return user_text
+
+
+def _build_payload(prompt: str, size: str, output_format: str, model: str) -> JsonDict:
+    user_text = _build_user_text(prompt, size, output_format)
 
     image_tool: JsonDict = {"type": "image_generation", "output_format": output_format}
     if size and size != "auto":
@@ -418,6 +466,297 @@ def _post_for_image(
     return image_bytes, item_meta
 
 
+# ---------- web backend (drive the real ChatGPT browser) ----------
+
+_AB_INSTALL_HINT = (
+    "install it (no npm, no token):\n"
+    "  curl -fsSL https://raw.githubusercontent.com/leeguooooo/"
+    "agent-browser-stealth/main/install.sh | sh\n"
+    "then connect it to your logged-in Chrome (see the agent-browser skill)"
+)
+
+
+def _find_agent_browser() -> str | None:
+    """Return the agent-browser binary path, or None if it isn't installed."""
+    for name in AB_BIN_CANDIDATES:
+        path = shutil.which(name)
+        if path:
+            return path
+    return None
+
+
+def _codex_token_present() -> bool:
+    """True if ~/.codex/auth.json carries a usable ChatGPT OAuth access_token."""
+    try:
+        auth = json.loads(AUTH_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    access, _account, _refresh = _extract_access_token(auth)
+    return bool(access)
+
+
+def _ab(ab: str, *ab_args: str, session: str, timeout: float) -> str:
+    """Run one agent-browser subcommand, return stdout. Raises GatewayError on failure."""
+    cmd = [ab, *ab_args, "--session", session]
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=max(5.0, timeout)
+        )
+    except subprocess.TimeoutExpired:
+        raise GatewayError(f"agent-browser timed out: {' '.join(ab_args[:2])}") from None
+    except FileNotFoundError:
+        raise GatewayError("agent-browser binary vanished mid-run") from None
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        raise GatewayError(
+            f"agent-browser {ab_args[0] if ab_args else ''} failed "
+            f"(exit {proc.returncode}): {' / '.join(tail)[:300]}"
+        )
+    return proc.stdout
+
+
+def _ab_eval(ab: str, js: str, session: str, timeout: float) -> Any:
+    """Run JS in the page and decode the value it returns.
+
+    Convention: the JS always `return JSON.stringify(value)`. agent-browser
+    prints that string JSON-encoded, so we decode twice — once to recover the
+    JSON text the page returned, once to parse it into a Python object.
+    """
+    out = _ab(ab, "eval", js, session=session, timeout=timeout)
+    # Scan from the last non-empty line for the first that decodes to a string.
+    for line in reversed([l for l in out.splitlines() if l.strip()]):
+        try:
+            inner = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(inner, str):
+            try:
+                return json.loads(inner)
+            except Exception:
+                return inner
+        return inner
+    raise GatewayError(f"could not parse agent-browser eval output: {out[:200]!r}")
+
+
+# JS: snapshot the generation state — whether a stop/streaming control is still
+# present, and the newest image asset src that was NOT already on the page when
+# we started (baseline list passed in). Returned as a JSON string.
+_JS_STATE = r"""(() => {
+  const seen = new Set(%s);
+  const stop = !!document.querySelector(
+    'button[data-testid="stop-button"], button[aria-label*="Stop" i]'
+  );
+  const re = new RegExp(%s);
+  const fresh = [...document.querySelectorAll('img')]
+    .map(i => i.currentSrc || i.src)
+    .filter(s => re.test(s) && !seen.has(s));
+  return JSON.stringify({stop, fresh, last: fresh[fresh.length - 1] || null});
+})()"""
+
+_JS_BASELINE = r"""(() => {
+  const re = new RegExp(%s);
+  const srcs = [...document.querySelectorAll('img')]
+    .map(i => i.currentSrc || i.src).filter(s => re.test(s));
+  return JSON.stringify(srcs);
+})()"""
+
+# JS: fetch the asset bytes from inside the authenticated page and hand them
+# back base64-encoded along with the content type. credentials:'include' reuses
+# the browser's session cookies, so the signed/asset URL resolves.
+_JS_FETCH = r"""(async () => {
+  try {
+    const r = await fetch(%s, {credentials: 'include'});
+    if (!r.ok) return JSON.stringify({ok: false, status: r.status});
+    const buf = new Uint8Array(await (await r.blob()).arrayBuffer());
+    let bin = '';
+    const CH = 0x8000;
+    for (let i = 0; i < buf.length; i += CH)
+      bin += String.fromCharCode.apply(null, buf.subarray(i, i + CH));
+    return JSON.stringify({ok: true, type: r.headers.get('content-type'),
+                           bytes: buf.length, b64: btoa(bin)});
+  } catch (e) { return JSON.stringify({ok: false, error: String(e)}); }
+})()"""
+
+
+def _web_not_logged_in(ab: str, session: str, timeout: float) -> bool:
+    """Best-effort check for a chatgpt.com login wall.
+
+    True if the page shows login/signup affordances (or redirected to an auth
+    URL) and no composer. On any uncertainty returns False — we only assert a
+    login wall when we can see one, so we never misroute a transient hiccup.
+    """
+    js = (
+        "(() => {"
+        "  const url = location.href;"
+        "  const onAuth = /\\/auth|\\/login|auth\\.openai\\.com/.test(url);"
+        "  const loginBtn = !!document.querySelector("
+        "    'a[href*=\"auth/login\"], [data-testid=\"login-button\"], "
+        "     [data-testid=\"welcome-login-button\"]');"
+        "  const composer = !!document.querySelector('#prompt-textarea');"
+        "  return JSON.stringify((onAuth || loginBtn) && !composer);"
+        "})()"
+    )
+    try:
+        return bool(_ab_eval(ab, js, session=session, timeout=min(15.0, timeout)))
+    except GatewayError:
+        return False
+
+
+def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[bytes, JsonDict]:
+    """Generate an image by driving the user's logged-in ChatGPT browser.
+
+    Returns (image_bytes, meta). Raises GatewayError / exits on failure.
+    """
+    ab = _find_agent_browser()
+    if ab is None:
+        raise WebUnavailable(f"`agent-browser` is not installed — {_AB_INSTALL_HINT}")
+    session = args.session or f"imagegen-{os.getpid()}"
+    deadline = start + args.timeout
+    user_text = _build_user_text(args.prompt, args.size, args.format)
+
+    def emit(msg: str) -> None:
+        if progress:
+            print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
+
+    def remaining() -> float:
+        return max(2.0, deadline - time.monotonic())
+
+    emit(f"opening ChatGPT (session={session})")
+    try:
+        # Capped low so an unreachable browser falls back to codex quickly in
+        # auto-mode instead of stalling on the connect for a minute.
+        _ab(ab, "open", WEB_NEW_CHAT_URL, session=session, timeout=min(30.0, remaining()))
+    except GatewayError as e:
+        # Couldn't even open a tab — the browser relay isn't reachable.
+        raise WebUnavailable(
+            f"couldn't drive the browser via agent-browser ({e}). Is Chrome open "
+            f"with the agent-browser extension connected?"
+        ) from None
+
+    # Wait for the composer to exist, then capture the baseline set of image
+    # srcs already on the page so we never mistake a prior image for the new one.
+    composer_ok = False
+    for _ in range(20):
+        try:
+            present = _ab_eval(
+                ab, "(() => JSON.stringify(!!document.querySelector('#prompt-textarea')))()",
+                session=session, timeout=min(20.0, remaining()),
+            )
+        except GatewayError:
+            present = False
+        if present:
+            composer_ok = True
+            break
+        time.sleep(1.0)
+    if not composer_ok:
+        # No composer: almost always a login wall. Confirm so the message — and
+        # the auto-router's fallback decision — are right.
+        if _web_not_logged_in(ab, session, remaining()):
+            raise WebUnavailable(
+                "the connected browser is not logged in to chatgpt.com — sign in "
+                "there, or the run will fall back to the codex backend."
+            )
+        raise WebUnavailable(
+            "ChatGPT composer (#prompt-textarea) never appeared (page didn't load "
+            "or the UI changed)."
+        )
+
+    baseline = _ab_eval(ab, _JS_BASELINE % json.dumps(WEB_IMG_SRC_RE),
+                        session=session, timeout=min(20.0, remaining()))
+    if not isinstance(baseline, list):
+        baseline = []
+
+    emit("submitting prompt")
+    # The composer is a ProseMirror/React contenteditable. `fill` mutates the
+    # DOM without firing the input events React listens for, so the send button
+    # stays bound to empty state and nothing submits. Real keystrokes via
+    # `keyboard type` go through ProseMirror's input path and update React, so
+    # both Enter and the send button then work.
+    _ab(ab, "click", "#prompt-textarea", session=session, timeout=min(20.0, remaining()))
+    _ab(ab, "keyboard", "type", user_text, session=session, timeout=min(60.0, remaining()))
+    _ab(ab, "press", "Enter", session=session, timeout=min(20.0, remaining()))
+    # Fallback: if Enter didn't take (composer still holds the text), click send.
+    try:
+        still_there = _ab_eval(
+            ab,
+            "(() => { const t=(document.querySelector('#prompt-textarea')||{}).textContent||''; "
+            "return JSON.stringify(t.trim().length>0); })()",
+            session=session, timeout=min(15.0, remaining()),
+        )
+    except GatewayError:
+        still_there = False
+    if still_there:
+        try:
+            _ab(ab, "click", 'button[data-testid="send-button"]',
+                session=session, timeout=min(15.0, remaining()))
+        except GatewayError:
+            pass
+
+    # Poll until the stream stops AND a brand-new image asset is present and
+    # stable across two reads (guards against grabbing a mid-render partial).
+    state_js = _JS_STATE % (json.dumps(baseline), json.dumps(WEB_IMG_SRC_RE))
+    last_phase = ""
+    final_src: str | None = None
+    stable_src: str | None = None
+    saw_stop = False
+    while time.monotonic() < deadline:
+        time.sleep(2.0)
+        try:
+            st = _ab_eval(ab, state_js, session=session, timeout=min(20.0, remaining()))
+        except GatewayError:
+            continue
+        if not isinstance(st, dict):
+            continue
+        if st.get("stop"):
+            saw_stop = True
+            if last_phase != "generating":
+                last_phase = "generating"
+                emit("generating")
+            stable_src = None
+            continue
+        cur = st.get("last")
+        if cur:
+            if last_phase not in ("receiving image", "done"):
+                last_phase = "receiving image"
+                emit("receiving image")
+            # Require the same fresh src twice in a row before trusting it.
+            if cur == stable_src:
+                final_src = cur
+                break
+            stable_src = cur
+        elif saw_stop:
+            # Stream ended with no image — likely a refusal or a text-only reply.
+            raise GatewayError(
+                "ChatGPT finished without producing an image (it may have replied "
+                "with text or declined). Try rephrasing the prompt."
+            )
+
+    if not final_src:
+        raise GatewayError(
+            f"timed out after {args.timeout}s waiting for the image "
+            f"(last phase: {last_phase or 'connecting'})."
+        )
+
+    emit("downloading image bytes")
+    res = _ab_eval(ab, _JS_FETCH % json.dumps(final_src),
+                  session=session, timeout=min(60.0, remaining()))
+    if not isinstance(res, dict) or not res.get("ok"):
+        detail = res.get("status") or res.get("error") if isinstance(res, dict) else res
+        raise GatewayError(f"failed to download the generated image: {detail}")
+    try:
+        image_bytes = base64.b64decode(res["b64"], validate=True)
+    except Exception:
+        raise GatewayError("generated image came back as invalid base64") from None
+
+    meta: JsonDict = {"content_type": res.get("type"), "source": "web"}
+    if not args.keep_tab:
+        try:
+            _ab(ab, "close", session=session, timeout=15.0)
+        except GatewayError:
+            pass  # leaving a tab open is harmless; never fail the run over cleanup
+    return image_bytes, meta
+
+
 # ---------- save ----------
 
 def _default_out_path(prompt: str, fmt: str) -> Path:
@@ -454,56 +793,16 @@ def _positive_int(value: str) -> int:
     return v
 
 
-# ---------- main ----------
+# ---------- codex backend (headless responses API) ----------
 
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Generate an image with your ChatGPT subscription (no API key)."
-    )
-    parser.add_argument(
-        "-V", "--version", action="version",
-        version=f"chatgpt-imagegen {__version__}",
-    )
-    parser.add_argument("prompt", help="Description of the image to generate")
-    parser.add_argument("-o", "--out", help="Output file path (default: assets/generated/<slug>.<ext>)")
-    parser.add_argument(
-        "--size",
-        default="auto",
-        help="auto | WIDTHxHEIGHT (e.g. 1024x1024, 1536x1024, 1024x1536). "
-             "Forwarded as-is; the backend decides what it accepts.",
-    )
-    parser.add_argument("--format", default="png", choices=["png", "jpeg", "webp"])
-    parser.add_argument("--model", default=os.environ.get("CHATGPT_IMAGEGEN_MODEL", "gpt-5.5"))
-    parser.add_argument(
-        "--timeout",
-        type=_positive_int,
-        default=DEFAULT_TOTAL_TIMEOUT,
-        help=f"Total wall-clock budget for the request, in seconds "
-             f"(default: {DEFAULT_TOTAL_TIMEOUT}). Large images can take 2-3 min.",
-    )
-    parser.add_argument(
-        "--stall-timeout",
-        type=_positive_int,
-        default=int(DEFAULT_STALL_TIMEOUT),
-        help=f"Max seconds of silence (no SSE data) before the request is "
-             f"declared stalled (default: {int(DEFAULT_STALL_TIMEOUT)}). "
-             f"Clamped to --timeout.",
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Print only the saved path on stdout (stderr progress is unaffected; "
-             "use --no-progress to silence it).",
-    )
-    parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Suppress the stderr progress timeline (errors are still shown).",
-    )
-    args = parser.parse_args()
-    progress = not args.no_progress
-    stall_timeout = float(min(args.stall_timeout, args.timeout))
+def run_codex(
+    args: argparse.Namespace, progress: bool, stall_timeout: float, start: float
+) -> tuple[bytes, JsonDict]:
+    """Generate an image via the headless codex/responses endpoint.
 
+    Fast and dependency-free, but every call bills the metered Codex-usage
+    bucket. Returns (image_bytes, meta); exits on unrecoverable failure.
+    """
     auth = _load_auth()
     access, account_id, refresh = _extract_access_token(auth)
     if not access:
@@ -516,24 +815,14 @@ def main() -> int:
 
     version = _detect_codex_version()
     payload = _build_payload(args.prompt, args.size, args.format, args.model)
-    start = time.monotonic()
     deadline = start + args.timeout
-
-    if progress:
-        prompt_preview = f"{args.prompt[:60]}{'…' if len(args.prompt) > 60 else ''}"
-        print(
-            f"[   0.0s] requesting image  (size={args.size} format={args.format} "
-            f"model={args.model} timeout={args.timeout}s stall={int(stall_timeout)}s)",
-            file=sys.stderr,
-        )
-        print(f"           prompt: {prompt_preview}", file=sys.stderr)
 
     def _attempt(token: str) -> tuple[bytes, JsonDict]:
         headers = _build_headers(token, account_id, version)
         return _post_for_image(payload, headers, deadline, start, stall_timeout, progress)
 
     try:
-        image_bytes, meta = _attempt(access)
+        return _attempt(access)
     except GatewayError as e:
         # Auto-refresh on 401/403 once, then retry. Any other error → fail clean.
         if e.status in (401, 403) and refresh:
@@ -566,11 +855,149 @@ def main() -> int:
                     file=sys.stderr,
                 )
             try:
-                image_bytes, meta = _attempt(new_access)
+                return _attempt(new_access)
             except GatewayError as retry_err:
                 sys.exit(str(retry_err))
         else:
             sys.exit(str(e))
+
+
+# ---------- backend routing ----------
+
+def _dispatch(
+    args: argparse.Namespace, progress: bool, stall_timeout: float, start: float
+) -> tuple[bytes, JsonDict]:
+    """Pick a backend and run it.
+
+    auto  : prefer web (spares Codex-usage); fall back to codex only when the
+            web backend is *unavailable* (no agent-browser / browser not
+            reachable / not logged in). A web failure that happens after the
+            prompt was submitted is NOT silently retried on codex — that would
+            spend the very bucket auto-mode is trying to protect.
+    web   : force web; any failure is fatal (with guidance).
+    codex : force codex.
+    """
+    def note(msg: str) -> None:
+        if progress:
+            print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
+
+    if args.backend == "codex":
+        return run_codex(args, progress, stall_timeout, start)
+
+    if args.backend == "web":
+        try:
+            return run_web(args, progress, start)
+        except GatewayError as e:
+            sys.exit(str(e))
+
+    # auto
+    try:
+        return run_web(args, progress, start)
+    except WebUnavailable as e:
+        if _codex_token_present():
+            note(f"web backend unavailable ({e}); falling back to codex "
+                 f"(this consumes Codex-usage).")
+            return run_codex(args, progress, stall_timeout, start)
+        sys.exit(
+            "cannot generate an image — neither backend is ready:\n"
+            f"  • web:   {e}\n"
+            "  • codex: no ChatGPT OAuth token in ~/.codex/auth.json "
+            "(run `npm i -g @openai/codex && codex login`).\n"
+            "Set up either the logged-in browser (preferred — spares Codex-usage) "
+            "or codex login."
+        )
+    except GatewayError as e:
+        # Web was available but failed mid-generation. Don't silently burn the
+        # Codex bucket; surface it and let the user decide (--backend codex).
+        sys.exit(
+            f"{e}\n(web backend was reachable, so auto-mode did not fall back to "
+            f"codex — rerun with --backend codex to use the Codex-usage path.)"
+        )
+
+
+# ---------- main ----------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Generate an image with your ChatGPT subscription (no API key)."
+    )
+    parser.add_argument(
+        "-V", "--version", action="version",
+        version=f"chatgpt-imagegen {__version__}",
+    )
+    parser.add_argument("prompt", help="Description of the image to generate")
+    parser.add_argument("-o", "--out", help="Output file path (default: assets/generated/<slug>.<ext>)")
+    parser.add_argument(
+        "--size",
+        default="auto",
+        help="auto | WIDTHxHEIGHT (e.g. 1024x1024, 1536x1024, 1024x1536). "
+             "Forwarded as-is; the backend decides what it accepts.",
+    )
+    parser.add_argument("--format", default="png", choices=["png", "jpeg", "webp"])
+    parser.add_argument("--model", default=os.environ.get("CHATGPT_IMAGEGEN_MODEL", "gpt-5.5"))
+    parser.add_argument(
+        "--backend",
+        choices=["auto", "web", "codex"],
+        default=os.environ.get("CHATGPT_IMAGEGEN_BACKEND", "auto"),
+        help="auto (default): prefer web (spares Codex-usage limits); fall back "
+             "to codex only if the browser isn't available/logged in. "
+             "web: force the logged-in-browser path (agent-browser). "
+             "codex: force the headless codex/responses path (bills Codex-usage). "
+             "Also settable via CHATGPT_IMAGEGEN_BACKEND.",
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="(web backend) agent-browser session name to reuse a Chrome tab "
+             "group across runs (default: imagegen-<pid>).",
+    )
+    parser.add_argument(
+        "--keep-tab",
+        action="store_true",
+        help="(web backend) leave the ChatGPT tab open after generating instead "
+             "of closing it.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=DEFAULT_TOTAL_TIMEOUT,
+        help=f"Total wall-clock budget for the request, in seconds "
+             f"(default: {DEFAULT_TOTAL_TIMEOUT}). Large images can take 2-3 min.",
+    )
+    parser.add_argument(
+        "--stall-timeout",
+        type=_positive_int,
+        default=int(DEFAULT_STALL_TIMEOUT),
+        help=f"Max seconds of silence (no SSE data) before the request is "
+             f"declared stalled (default: {int(DEFAULT_STALL_TIMEOUT)}). "
+             f"Clamped to --timeout.",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Print only the saved path on stdout (stderr progress is unaffected; "
+             "use --no-progress to silence it).",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Suppress the stderr progress timeline (errors are still shown).",
+    )
+    args = parser.parse_args()
+    progress = not args.no_progress
+    stall_timeout = float(min(args.stall_timeout, args.timeout))
+    start = time.monotonic()
+
+    if progress:
+        prompt_preview = f"{args.prompt[:60]}{'…' if len(args.prompt) > 60 else ''}"
+        print(
+            f"[   0.0s] requesting image  (backend={args.backend} size={args.size} "
+            f"format={args.format} timeout={args.timeout}s)",
+            file=sys.stderr,
+        )
+        print(f"           prompt: {prompt_preview}", file=sys.stderr)
+
+    image_bytes, meta = _dispatch(args, progress, stall_timeout, start)
 
     out_path = Path(args.out) if args.out else _default_out_path(args.prompt, args.format)
     if args.out and progress:

@@ -27,18 +27,29 @@ OpenAI offers image generation in two completely separate ways:
 
 The **subscription path is invisible** to people who don't use the Codex CLI. It runs on ChatGPT's internal `backend-api/codex/responses` endpoint as a Responses-API tool, authenticated by the OAuth token written into `~/.codex/auth.json` when you run `codex login`.
 
-`chatgpt-imagegen` is a 300-line wrapper that does exactly two things:
-1. Reads that OAuth token.
-2. Calls the same endpoint the Codex CLI calls — but lets you script it directly.
+`chatgpt-imagegen` exposes that capability on the command line and to any AI agent — with **two backends** that hit different parts of your subscription.
 
-That's it. Same wire protocol, same model quality, same subscription quota.
+## Backends
+
+The same subscription meters two separate buckets, and which one you spend depends on *where* the image is generated:
+
+| Backend | How it generates | Bucket spent | Needs |
+| --- | --- | --- | --- |
+| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser`](https://github.com/leeguooooo/agent-browser-stealth)) and generates in a normal chat — the same surface as typing in the app. The real browser clears Cloudflare + the sentinel proof-of-work a headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | A logged-in chatgpt.com browser + `agent-browser`. |
+| **`codex`** | Headless POST to `backend-api/codex/responses`, reusing `~/.codex/auth.json`. | **Codex-usage** (the metered bucket). | `codex login`. |
+
+**Default is `auto`**: it tries `web` first (to spare your Codex-usage limit) and falls back to `codex` only when no logged-in browser is reachable. If neither is set up, it tells you how to fix both. Force one with `--backend web` / `--backend codex`, or set `CHATGPT_IMAGEGEN_BACKEND`.
+
+> Why two? The consumer ChatGPT surface sits behind Cloudflare + a sentinel proof-of-work that only a real browser passes — that's why `web` drives a browser instead of calling an endpoint. The `codex/responses` surface has no such wall (it's the Codex CLI's sanctioned API), which is why `codex` can run headless — at the cost of billing the Codex-usage bucket.
 
 ## Install
 
-You need:
-- Python 3.10+
-- The OpenAI Codex CLI (`npm i -g @openai/codex`)
-- A ChatGPT subscription (Plus / Pro / Team) and a one-time `codex login`
+You need Python 3.10+, a ChatGPT subscription (Plus / Pro / Team), and **at least one backend set up**:
+
+- **For the default `web` backend:** [`agent-browser`](https://github.com/leeguooooo/agent-browser-stealth) installed and connected to a Chrome that's signed in to chatgpt.com. (Spares your Codex-usage limit.)
+- **For the `codex` backend:** the OpenAI Codex CLI (`npm i -g @openai/codex`) and a one-time `codex login`.
+
+`auto` mode uses whichever is available, preferring `web`. Setting up both gives you the seamless fallback.
 
 ### Option A — for AI agents (recommended)
 
@@ -75,6 +86,9 @@ chatgpt-imagegen "<prompt>" [options]
 
 | Flag | Default | Notes |
 | --- | --- | --- |
+| `--backend` | `auto` | `auto` \| `web` \| `codex`. `auto` prefers web (spares Codex-usage), falls back to codex if no logged-in browser. See [Backends](#backends). Also `CHATGPT_IMAGEGEN_BACKEND`. |
+| `--session` | `imagegen-<pid>` | *(web)* Reuse a named `agent-browser` Chrome tab group across runs. |
+| `--keep-tab` | off | *(web)* Leave the ChatGPT tab open after generating (default closes it). |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created. A warning is printed when the suffix and `--format` disagree (e.g. `-o foo.jpg --format png`). |
 | `--size` | `auto` | `auto` or any `WIDTHxHEIGHT`. Verified working: `1024x1024`, `1024x1536`, `1536x1024`. Larger sizes are forwarded as-is. |
 | `--format` | `png` | `png` \| `jpeg` \| `webp` |
@@ -83,7 +97,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.2.1`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.3.0`) and exit. |
 
 Examples:
 
@@ -178,6 +192,24 @@ Long-form writeups about why this exists and how the subscription path works und
 English / Japanese auto-translations live at the same URLs under `/en/` and `/ja/`.
 
 ## How it works (technical)
+
+### `web` backend (default)
+
+Drives your logged-in browser via `agent-browser` so generation runs on the consumer ChatGPT surface — which a headless client can't reach, because it sits behind Cloudflare bot-detection **and** a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token). A real browser passes both transparently. The flow:
+
+```
+chatgpt-imagegen --backend web
+   │
+   ├── agent-browser open https://chatgpt.com/   (a *regular* chat — Temporary Chat disables the image tool)
+   ├── type the prompt with real keystrokes        (ProseMirror/React composer ignores DOM-only `fill`)
+   ├── poll the page: wait until streaming stops AND a new <img> asset is stable
+   └── fetch the asset bytes in-page (credentials:'include') → base64 → save
+       (the signed estuary/content URL is authorized by the browser's own cookies)
+```
+
+No tokens leave the browser. One chat is left in your history per run.
+
+### `codex` backend
 
 The Codex CLI's built-in `image_gen` skill is implemented as a native Responses-API tool:
 
