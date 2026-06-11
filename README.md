@@ -35,7 +35,7 @@ The same subscription meters two separate buckets, and which one you spend depen
 
 | Backend | How it generates | Bucket spent | Needs |
 | --- | --- | --- | --- |
-| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser`](https://github.com/leeguooooo/agent-browser-stealth)) and generates in a normal chat — the same surface as typing in the app. The real browser clears Cloudflare + the sentinel proof-of-work a headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | A logged-in chatgpt.com browser + `agent-browser`. |
+| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth), the `agent-browser`/`abs` command) and generates in a normal chat — the same surface as typing in the app. The *stealth* fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | A logged-in chatgpt.com browser + `agent-browser-stealth`. |
 | **`codex`** | Headless POST to `backend-api/codex/responses`, reusing `~/.codex/auth.json`. | **Codex-usage** (the metered bucket). | `codex login`. |
 
 **Default is `auto`**: it tries `web` first (to spare your Codex-usage limit) and falls back to `codex` only when no logged-in browser is reachable. If neither is set up, it tells you how to fix both. Force one with `--backend web` / `--backend codex`, or set `CHATGPT_IMAGEGEN_BACKEND`.
@@ -46,7 +46,7 @@ The same subscription meters two separate buckets, and which one you spend depen
 
 You need Python 3.10+, a ChatGPT subscription (Plus / Pro / Team), and **at least one backend set up**:
 
-- **For the default `web` backend:** [`agent-browser`](https://github.com/leeguooooo/agent-browser-stealth) installed and connected to a Chrome that's signed in to chatgpt.com. (Spares your Codex-usage limit.)
+- **For the default `web` backend:** [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) installed (provides the `agent-browser` / `abs` command) and its extension connected to a Chrome that's signed in to chatgpt.com. The *stealth* fork specifically is what passes Cloudflare's bot-detection. (Spares your Codex-usage limit.)
 - **For the `codex` backend:** the OpenAI Codex CLI (`npm i -g @openai/codex`) and a one-time `codex login`.
 
 `auto` mode uses whichever is available, preferring `web`. Setting up both gives you the seamless fallback.

@@ -20,9 +20,9 @@ Usage:
     chatgpt-imagegen "hero banner" -o web/hero.png --backend codex
 
 Setup (one-time):
-    web backend:   install agent-browser and connect it to your logged-in
-                   Chrome (see the agent-browser skill); be signed in to
-                   chatgpt.com in that browser.
+    web backend:   install agent-browser-stealth (provides the `agent-browser`
+                   command) and connect its extension to your logged-in Chrome;
+                   be signed in to chatgpt.com in that browser.
     codex backend: `npm i -g @openai/codex` and run `codex login`.
 
 Project: https://github.com/leeguooooo/chatgpt-imagegen
@@ -66,11 +66,13 @@ FALLBACK_UA = f"codex_cli_rs/{FALLBACK_VERSION} (Mac OS 26.0.1; arm64) chatgpt-i
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 VERSION_PATH = Path.home() / ".codex" / "version.json"
 
-# Web backend: drive the real, logged-in ChatGPT browser via agent-browser so
-# image generation runs on the ChatGPT *conversation* surface (the cheap bucket)
+# Web backend: drive the real, logged-in ChatGPT browser via agent-browser-stealth
+# so image generation runs on the ChatGPT *conversation* surface (the cheap bucket)
 # rather than the codex/responses surface (the metered Codex-usage bucket). The
-# real browser transparently clears Cloudflare + the sentinel proof-of-work that
-# a headless client cannot replicate. See README "Backends" for the trade-off.
+# stealth fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work
+# that a plain/headless client cannot replicate. See README "Backends".
+# The stealth package ships one binary exposed under three command names — accept
+# whichever is on PATH (on a typical install the latter two symlink to the first).
 AB_BIN_CANDIDATES = ("agent-browser", "agent-browser-stealth", "abs")
 # A *regular* new chat — NOT a temporary chat. Temporary Chat disables the
 # image_generation tool ("I can't generate images in this temporary chat"),
@@ -213,15 +215,31 @@ def _persist_refreshed_auth(original: JsonDict, refreshed: JsonDict) -> None:
 
 
 def _detect_codex_version() -> str:
+    """Best codex version string to send in the `version` header.
+
+    Reads `~/.codex/version.json`, but returns the *newer* of that value and
+    FALLBACK_VERSION. A stale `latest_version` (seen in the wild as low as
+    0.99.0 while the installed CLI was 0.130.0) makes the backend reject newer
+    models with "requires a newer version of Codex" — so never send a version
+    older than our known-good floor.
+    """
+    def parse(v: str) -> tuple[int, int, int] | None:
+        return tuple(int(p) for p in v.split(".")) if re.fullmatch(r"\d+\.\d+\.\d+", v) else None  # type: ignore[return-value]
+
+    floor = FALLBACK_VERSION
     try:
         if VERSION_PATH.exists():
             data = json.loads(VERSION_PATH.read_text(encoding="utf-8"))
             v = data.get("latest_version")
-            if isinstance(v, str) and re.fullmatch(r"\d+\.\d+\.\d+", v):
-                return v
+            if isinstance(v, str):
+                pv, pf = parse(v), parse(floor)
+                if pv and pf:
+                    return v if pv >= pf else floor
+                if pv:
+                    return v
     except Exception:
         pass
-    return FALLBACK_VERSION
+    return floor
 
 
 def _loosen_read_timeout(resp: Any, timeout: float) -> None:

@@ -12,7 +12,7 @@ A standalone Python CLI that produces images via the user's ChatGPT subscription
 
 | Backend | Surface | Usage bucket | Needs | Speed |
 | --- | --- | --- | --- | --- |
-| **`web`** | Drives the user's logged-in ChatGPT browser (via `agent-browser`) and generates in a regular chat — the same surface as typing in the app. The real browser transparently clears Cloudflare + the sentinel proof-of-work that a headless client can't. | **ChatGPT conversation** — does **not** consume the metered Codex-usage limit. | `agent-browser` installed and connected to a Chrome that is **signed in to chatgpt.com**. | ~30–60 s; one chat is left in history per run. |
+| **`web`** | Drives the user's logged-in ChatGPT browser (via **`agent-browser-stealth`**, the `agent-browser`/`abs` command) and generates in a regular chat — the same surface as typing in the app. The stealth fork is what clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does **not** consume the metered Codex-usage limit. | `agent-browser-stealth` installed and its extension connected to a Chrome **signed in to chatgpt.com**. | ~30–60 s; one chat is left in history per run. |
 | **`codex`** | Headless POST to `chatgpt.com/backend-api/codex/responses` with the `image_generation` tool, reusing `~/.codex/auth.json`. | **Codex-usage** (metered — this is the bucket the user usually wants to spare). | `codex login` (writes `~/.codex/auth.json`). | Fast; no browser, no history. |
 
 **Default is `auto`** (`--backend auto`, or `CHATGPT_IMAGEGEN_BACKEND`): it tries **web first** because that spares the Codex-usage limit, and falls back to **codex only when web is unavailable** — i.e. `agent-browser` isn't installed, the browser isn't reachable, or chatgpt.com isn't logged in. The two not-set-up cases are handled explicitly:
@@ -24,7 +24,7 @@ Auto does **not** fall back to codex if web was reachable but the generation its
 
 ## Prerequisites
 
-**For the default `web` backend:** the user must have `agent-browser` installed and connected to a Chrome that is signed in to chatgpt.com. If the CLI errors that `agent-browser` is missing, point the user at the agent-browser skill / its `install.sh`. The "Temporary Chat" mode disables image generation, so this backend always opens a *regular* chat.
+**For the default `web` backend:** the user must have **`agent-browser-stealth`** installed (it provides the `agent-browser` / `abs` command) and its extension connected to a Chrome that is signed in to chatgpt.com. The *stealth* fork specifically is required — its real-logged-in-Chrome connect is what passes Cloudflare's bot-detection; a plain `agent-browser` may not. If the CLI errors that the binary is missing, point the user at the `agent-browser` skill / its `install.sh` (`leeguooooo/agent-browser-stealth`). The "Temporary Chat" mode disables image generation, so this backend always opens a *regular* chat.
 
 **For the `codex` backend:** the user must have run, **once, ever**:
 
