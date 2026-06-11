@@ -32,6 +32,8 @@ The **subscription path is invisible** to people who don't use the Codex CLI. It
 
 ## Backends
 
+<img src="./docs/two-backends.svg" width="760" alt="chatgpt-imagegen — web vs codex backend flow">
+
 The same subscription meters two separate buckets, and which one you spend depends on *where* the image is generated:
 
 | Backend | How it generates | Bucket spent | Needs |

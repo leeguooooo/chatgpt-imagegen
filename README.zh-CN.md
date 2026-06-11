@@ -30,6 +30,8 @@ OpenAI 的图像生成有两条完全独立的路:
 
 ## 两个后端
 
+<img src="./docs/two-backends.svg" width="760" alt="chatgpt-imagegen —— web 与 codex 后端流程">
+
 同一份订阅,OpenAI 分了**两个独立的限流桶**;你花哪个桶,取决于图是在**哪儿**生成的:
 
 | 后端 | 怎么生成 | 花哪个桶 | 前置条件 |
