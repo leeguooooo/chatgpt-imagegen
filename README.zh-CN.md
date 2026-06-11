@@ -13,6 +13,10 @@ chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
 
 不用起服务,不用代理,不用 API key。一个 Python 文件,只用标准库。
 
+<img src="./docs/example-doodle.png" width="380" alt="出图示例">
+
+<sub>出图示例 —— 本工具生成(要求画一张"故意很烂"的老式画图程序原理图)。</sub>
+
 ---
 
 ## 为什么有这个项目
@@ -37,22 +41,12 @@ OpenAI 的图像生成有两条完全独立的路:
 | **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth),命令名 `agent-browser`/`abs`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠 *stealth* 分支的真 Chrome 连接,过掉 Cloudflare + sentinel 工作量证明(无头/普通客户端过不了)。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 一个登录了 chatgpt.com 的浏览器 + `agent-browser-stealth`。 |
 | **`codex`** | 无头 POST 到 `backend-api/codex/responses`,复用 `~/.codex/auth.json`。 | **Codex 用量**(计量的那个桶)。 | `codex login`。 |
 
-**默认是 `auto`**:先试 `web`(省你的 Codex 用量额度),只有当没有可用的登录浏览器时才回退到 `codex`。两个都没配好时,会告诉你各自怎么修。用 `--backend web` / `--backend codex` 可以强制其一,也可用环境变量 `CHATGPT_IMAGEGEN_BACKEND`。
+**默认 `auto`**:先试 `web`(省 Codex 用量),没有可用登录浏览器时回退 `codex`。用 `--backend web` / `--backend codex` 强制其一(或环境变量 `CHATGPT_IMAGEGEN_BACKEND`)。
 
-> 为什么要两个?消费级 ChatGPT 界面挂在 Cloudflare + sentinel 工作量证明后面,只有真浏览器过得去 —— 所以 `web` 才驱动浏览器、而不是直接打接口。`codex/responses` 那条没有这道墙(它是 Codex CLI 的官方 API),所以 `codex` 能无头跑 —— 代价是计入 Codex 用量桶。
+- **笔记本/台式机**（Chrome 开着且登录）→ `web` —— 不花 Codex 用量。
+- **服务器 / 无头 agent 机器** → `codex` —— 那里没浏览器,`auto` 会自己回退。
 
-### 哪台机器用哪个后端
-
-分工就看每台机器实际有什么 —— 而且 `auto` 会自己选对:
-
-| 机器 | 有登录的 ChatGPT 浏览器吗? | 用 | 为什么 |
-| --- | --- | --- | --- |
-| **你的笔记本/台式机**（交互式） | 有 —— Chrome 本来就开着且登录了 | **`web`** | 省 Codex 用量额度;就是你日常在用的那个 app。 |
-| **服务器 / 无头 agent 机器**（比如 bot 运行机） | 没有 —— 没图形界面浏览器,也没挂着 chatgpt.com 登录态 | **`codex`** | 无头、不需要浏览器;对一台已经跑过 `codex login` 的自动化机器最顺手。 |
-
-所以 `web` 后端并**不是**到处都"更好" —— 它需要那台机器上有真实、已登录的浏览器。无头服务器没有这种浏览器,所以那里的 `auto` 会(正确地)回退到 `codex`。要让服务器也用 `web`,就得常驻一个有头 Chrome(装 stealth 扩展、且一直登录着 chatgpt.com)—— 能做,但当那台机器本来就有 `codex` 时,通常不值得。
-
-**账号注意点:** `web` 后端用的是**浏览器当前登录的那个账号**出图 —— 它可能和 `~/.codex/auth.json` 里的账号不是同一个。如果你想用某个特定订阅的桶,确认浏览器登录的就是那个账号。
+`web` 用的是**浏览器当前登录的那个账号**出图,可能和 `~/.codex/auth.json` 不是同一个 —— 让浏览器登录你想用其额度的那个账号。
 
 ## 安装
 

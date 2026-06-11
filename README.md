@@ -15,6 +15,9 @@ No server. No proxy. No API key. One Python file, stdlib only.
 
 <img width="1494" height="870" alt="image" src="https://github.com/user-attachments/assets/b48b0563-58a3-41ff-a207-f01eafbf2ccb" />
 
+<img src="./docs/example-doodle.png" width="380" alt="example output">
+
+<sub>Example output — made by this tool (asked for a deliberately awful MS-Paint schematic).</sub>
 
 ---
 
@@ -40,51 +43,28 @@ The same subscription meters two separate buckets, and which one you spend depen
 | **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth), the `agent-browser`/`abs` command) and generates in a normal chat — the same surface as typing in the app. The *stealth* fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | A logged-in chatgpt.com browser + `agent-browser-stealth`. |
 | **`codex`** | Headless POST to `backend-api/codex/responses`, reusing `~/.codex/auth.json`. | **Codex-usage** (the metered bucket). | `codex login`. |
 
-**Default is `auto`**: it tries `web` first (to spare your Codex-usage limit) and falls back to `codex` only when no logged-in browser is reachable. If neither is set up, it tells you how to fix both. Force one with `--backend web` / `--backend codex`, or set `CHATGPT_IMAGEGEN_BACKEND`.
+**Default `auto`** tries `web` first (to spare Codex-usage) and falls back to `codex` when no logged-in browser is reachable. Force one with `--backend web` / `--backend codex` (or `CHATGPT_IMAGEGEN_BACKEND`).
 
-> Why two? The consumer ChatGPT surface sits behind Cloudflare + a sentinel proof-of-work that only a real browser passes — that's why `web` drives a browser instead of calling an endpoint. The `codex/responses` surface has no such wall (it's the Codex CLI's sanctioned API), which is why `codex` can run headless — at the cost of billing the Codex-usage bucket.
+- **Laptop / desktop** (Chrome open + signed in) → `web` — no Codex-usage spent.
+- **Server / headless agent box** → `codex` — no browser there, so `auto` falls back on its own.
 
-### Which backend for which machine
-
-The split follows what each machine actually has — and `auto` picks correctly on its own:
-
-| Machine | Has a logged-in ChatGPT browser? | Use | Why |
-| --- | --- | --- | --- |
-| **Your laptop / desktop** (interactive) | Yes — Chrome is already open and signed in | **`web`** | Spares your Codex-usage limit; it's just the app you already use. |
-| **A server / headless agent box** (e.g. a bot runner) | No — no GUI browser, no parked chatgpt.com session | **`codex`** | Headless, no browser needed; the natural fit for an automation box that already ran `codex login`. |
-
-So the `web` backend is **not** "better" everywhere — it needs a real, logged-in browser on that machine. A headless server has no such browser, so `auto` there will (correctly) fall back to `codex`. Making a server use `web` would mean running a persistent headed Chrome (with the stealth extension, kept logged in to chatgpt.com) — possible, but rarely worth it when that box already has `codex`.
-
-**The account caveat:** the `web` backend generates under **whatever account that browser is logged into** — which may differ from the account in `~/.codex/auth.json`. If you want a specific subscription's bucket, make sure the browser is signed in to that account.
+`web` generates under **whatever account that browser is logged into**, which may differ from `~/.codex/auth.json` — sign the browser into the account whose bucket you want.
 
 ## Install
 
-You need Python 3.10+, a ChatGPT subscription (Plus / Pro / Team), and **at least one backend set up**:
+You need Python 3.10+, a ChatGPT subscription, and **at least one backend** (`auto` uses whichever is set up, preferring `web`):
 
-- **For the default `web` backend:** [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) installed (provides the `agent-browser` / `abs` command) and its extension connected to a Chrome that's signed in to chatgpt.com. The *stealth* fork specifically is what passes Cloudflare's bot-detection. (Spares your Codex-usage limit.)
-- **For the `codex` backend:** the OpenAI Codex CLI (`npm i -g @openai/codex`) and a one-time `codex login`.
+**`codex` backend** — `npm i -g @openai/codex` then `codex login` (writes `~/.codex/auth.json`).
 
-`auto` mode uses whichever is available, preferring `web`. Setting up both gives you the seamless fallback.
-
-#### Setting up the `web` backend (agent-browser-stealth)
-
-**What it is:** [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) is a stealth fork of the `agent-browser` CLI. It drives your **real, already-logged-in Chrome** through a browser extension + native-messaging relay — so requests carry a genuine browser's TLS fingerprint and cookies and pass Cloudflare's bot-detection + ChatGPT's sentinel proof-of-work. A plain headless automation client can't do this; that's why the `web` backend needs the stealth fork specifically.
-
-- **Repo:** https://github.com/leeguooooo/agent-browser-stealth
-- **Chrome extension:** [agent-browser-stealth on the Chrome Web Store](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk)
+**`web` backend** — [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) (a stealth fork of `agent-browser`; it drives your real logged-in Chrome via an extension, which is what passes Cloudflare + ChatGPT's anti-bot check) connected to a Chrome signed in to chatgpt.com:
 
 ```bash
-# 1. Install the CLI (no npm, no token — installs the `agent-browser` / `abs` command)
 curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
-
-# 2. Register the native-messaging host
 agent-browser extension install
-
-# 3. Add the extension to Chrome (Web Store link above), then restart Chrome
-# 4. In that Chrome, sign in to https://chatgpt.com
+# then: add the Chrome extension → restart Chrome → sign in to chatgpt.com
 ```
 
-Once the extension is connected, `chatgpt-imagegen` (web backend) drives that real Chrome automatically — no remote-debugging prompts, no separate browser.
+Extension: [Chrome Web Store](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk).
 
 ### Option A — for AI agents (recommended)
 
