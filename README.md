@@ -4,7 +4,9 @@
 
 **Generate images using your ChatGPT subscription — no `OPENAI_API_KEY` needed.**
 
-A tiny, zero-dependency Python CLI (and AI-agent skill) that talks directly to ChatGPT's internal `image_generation` tool. If you already pay for ChatGPT Plus / Pro / Team, you can already generate images — this just exposes that capability on the command line and to any AI agent.
+A tiny, zero-dependency Python CLI (and AI-agent skill) that generates images with your ChatGPT account — on the command line and for any AI agent.
+
+> **✨ Works on a free ChatGPT account too.** The default `web` backend just drives the normal ChatGPT web chat, where **even free-tier users get image generation** — so you can generate images with no paid plan, no API key, and no Codex (subject to the free tier's daily image limit). Paid plans simply get higher limits.
 
 ```bash
 chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
@@ -40,7 +42,7 @@ The same subscription meters two separate buckets, and which one you spend depen
 
 | Backend | How it generates | Bucket spent | Needs |
 | --- | --- | --- | --- |
-| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth), the `agent-browser`/`abs` command) and generates in a normal chat — the same surface as typing in the app. The *stealth* fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | A logged-in chatgpt.com browser + `agent-browser-stealth`. |
+| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth), the `agent-browser`/`abs` command) and generates in a normal chat — the same surface as typing in the app. The *stealth* fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | Any logged-in chatgpt.com browser (**free tier works**) + `agent-browser-stealth`. |
 | **`codex`** | Headless POST to `backend-api/codex/responses`, reusing `~/.codex/auth.json`. | **Codex-usage** (the metered bucket). | `codex login`. |
 
 **Default `auto`** tries `web` first (to spare Codex-usage) and falls back to `codex` when no logged-in browser is reachable. Force one with `--backend web` / `--backend codex` (or `CHATGPT_IMAGEGEN_BACKEND`).

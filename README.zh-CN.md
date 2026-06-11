@@ -4,7 +4,9 @@
 
 **用你的 ChatGPT 订阅生成图片 —— 不需要 `OPENAI_API_KEY`。**
 
-一个零依赖的单文件 Python CLI(同时也是 AI agent skill),直接调用 ChatGPT 内置的 `image_generation` 工具。只要你已经在付 ChatGPT Plus / Pro / Team,你本来就能生图 —— 这个工具只是把这份能力搬到命令行、并暴露给任意 AI agent。
+一个零依赖的单文件 Python CLI(同时也是 AI agent skill),用你的 ChatGPT 账号生成图片 —— 在命令行、也给任意 AI agent 用。
+
+> **✨ 免费 ChatGPT 账号也能用。** 默认的 `web` 后端走的就是普通 ChatGPT 网页对话,而**免费用户在网页里本来也能生图** —— 所以你不用付费套餐、不用 API key、不用 Codex 也能出图(受免费档每日生图上限约束)。付费套餐只是额度更高而已。
 
 ```bash
 chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
@@ -38,7 +40,7 @@ OpenAI 的图像生成有两条完全独立的路:
 
 | 后端 | 怎么生成 | 花哪个桶 | 前置条件 |
 | --- | --- | --- | --- |
-| **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth),命令名 `agent-browser`/`abs`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠 *stealth* 分支的真 Chrome 连接,过掉 Cloudflare + sentinel 工作量证明(无头/普通客户端过不了)。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 一个登录了 chatgpt.com 的浏览器 + `agent-browser-stealth`。 |
+| **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth),命令名 `agent-browser`/`abs`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠 *stealth* 分支的真 Chrome 连接,过掉 Cloudflare + sentinel 工作量证明(无头/普通客户端过不了)。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 任意登录了 chatgpt.com 的浏览器(**免费档也行**)+ `agent-browser-stealth`。 |
 | **`codex`** | 无头 POST 到 `backend-api/codex/responses`,复用 `~/.codex/auth.json`。 | **Codex 用量**(计量的那个桶)。 | `codex login`。 |
 
 **默认 `auto`**:先试 `web`(省 Codex 用量),没有可用登录浏览器时回退 `codex`。用 `--backend web` / `--backend codex` 强制其一(或环境变量 `CHATGPT_IMAGEGEN_BACKEND`)。
