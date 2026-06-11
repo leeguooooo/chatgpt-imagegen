@@ -721,20 +721,23 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
             time.sleep(1.0)
         return False
 
+    def _close() -> None:
+        """Close the session's browser/tab. Best-effort; never raises."""
+        try:
+            _ab(ab, "close", session=session, timeout=15.0)
+        except Exception:
+            pass  # leftover tab is harmless; never fail the run over cleanup
+
     chosen: str | None = None
     opened = False
-    for i, prof in enumerate(candidates):
+    for prof in candidates:
         label = "current Chrome (relay)" if prof is None else f"profile {prof!r}"
         emit(f"opening ChatGPT via {label}")
         if _try_open(prof):
             chosen, opened = prof, True
             emit(f"using {label}")
             break
-        if i < len(candidates) - 1:
-            try:  # clean up the non-logged-in attempt before trying the next
-                _ab(ab, "close", session=session, timeout=10.0)
-            except GatewayError:
-                pass
+        _close()  # always tear down a failed attempt, including the last
     if not opened:
         raise WebUnavailable(
             "no logged-in ChatGPT browser available (tried the open Chrome"
@@ -742,9 +745,20 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
             + "). Sign in to chatgpt.com, or use --backend codex."
         )
 
+    # Everything past here drives the now-open browser. Wrap it so the tab is
+    # ALWAYS closed on the way out — success, failure (quota/refusal/timeout), or
+    # exception — instead of leaking a window on every non-happy path.
+    try:
+        return _generate_in_browser(
+            ab, session, user_text, args, deadline, remaining, emit)
+    finally:
+        if not args.keep_tab:
+            _close()
+
+
+def _generate_in_browser(ab, session, user_text, args, deadline, remaining, emit):
     # Capture the baseline set of image srcs already on the page so we never
     # mistake a prior image for the new one.
-
     baseline = _ab_eval(ab, _JS_BASELINE % json.dumps(WEB_IMG_SRC_RE),
                         session=session, timeout=min(20.0, remaining()))
     if not isinstance(baseline, list):
@@ -845,11 +859,8 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
         raise GatewayError("generated image came back as invalid base64") from None
 
     meta: JsonDict = {"content_type": res.get("type"), "source": "web"}
-    if not args.keep_tab:
-        try:
-            _ab(ab, "close", session=session, timeout=15.0)
-        except GatewayError:
-            pass  # leaving a tab open is harmless; never fail the run over cleanup
+    # Cleanup (closing the tab) is handled by run_web's finally, so it runs on
+    # every exit path — not just this success one.
     return image_bytes, meta
 
 
