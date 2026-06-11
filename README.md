@@ -66,6 +66,26 @@ You need Python 3.10+, a ChatGPT subscription (Plus / Pro / Team), and **at leas
 
 `auto` mode uses whichever is available, preferring `web`. Setting up both gives you the seamless fallback.
 
+#### Setting up the `web` backend (agent-browser-stealth)
+
+**What it is:** [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) is a stealth fork of the `agent-browser` CLI. It drives your **real, already-logged-in Chrome** through a browser extension + native-messaging relay — so requests carry a genuine browser's TLS fingerprint and cookies and pass Cloudflare's bot-detection + ChatGPT's sentinel proof-of-work. A plain headless automation client can't do this; that's why the `web` backend needs the stealth fork specifically.
+
+- **Repo:** https://github.com/leeguooooo/agent-browser-stealth
+- **Chrome extension:** [agent-browser-stealth on the Chrome Web Store](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk)
+
+```bash
+# 1. Install the CLI (no npm, no token — installs the `agent-browser` / `abs` command)
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
+
+# 2. Register the native-messaging host
+agent-browser extension install
+
+# 3. Add the extension to Chrome (Web Store link above), then restart Chrome
+# 4. In that Chrome, sign in to https://chatgpt.com
+```
+
+Once the extension is connected, `chatgpt-imagegen` (web backend) drives that real Chrome automatically — no remote-debugging prompts, no separate browser.
+
 ### Option A — for AI agents (recommended)
 
 Install via [skills.sh](https://www.skills.sh) — works with Claude Code, Codex Agent, Cursor, OpenClaw, etc.:

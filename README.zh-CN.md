@@ -63,6 +63,26 @@ OpenAI 的图像生成有两条完全独立的路:
 
 `auto` 模式会用其中可用的那个,优先 `web`。两个都配好,就有无缝回退。
 
+#### 配置 `web` 后端(agent-browser-stealth)
+
+**它是什么:** [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) 是 `agent-browser` CLI 的 stealth(反检测)分支。它通过一个浏览器扩展 + 原生消息(native-messaging)中继,驱动你**真实、已登录的 Chrome** —— 于是请求带着真浏览器的 TLS 指纹和 cookie,能过 Cloudflare 反爬 + ChatGPT 的 sentinel 工作量证明。普通无头自动化客户端做不到这点,这就是 `web` 后端必须用 stealth 分支的原因。
+
+- **仓库:** https://github.com/leeguooooo/agent-browser-stealth
+- **Chrome 扩展:** [Chrome 应用商店里的 agent-browser-stealth](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk)
+
+```bash
+# 1. 装 CLI(不用 npm、不用 token —— 装上 `agent-browser` / `abs` 命令)
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
+
+# 2. 注册原生消息宿主
+agent-browser extension install
+
+# 3. 给 Chrome 装上扩展(上面的应用商店链接),然后重启 Chrome
+# 4. 在那个 Chrome 里登录 https://chatgpt.com
+```
+
+扩展连上后,`chatgpt-imagegen`(web 后端)会自动驱动那个真实 Chrome —— 没有远程调试弹窗,也不另起浏览器。
+
 ### 方式 A —— 给 AI agent 用(推荐)
 
 经 [skills.sh](https://www.skills.sh) 安装 —— 支持 Claude Code、Codex Agent、Cursor、OpenClaw 等:
