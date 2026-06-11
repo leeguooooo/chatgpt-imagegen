@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.3.0"
+version: "0.4.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system."
 ---
 
@@ -79,6 +79,7 @@ Useful flags:
 | Flag | When to use |
 | --- | --- |
 | `--backend auto` \| `web` \| `codex` | `auto` (default) prefers web and falls back to codex only when the browser is unavailable/not-logged-in; `web` forces the logged-in-browser path (spares Codex-usage); `codex` forces the headless path (bills Codex-usage). Also settable via `CHATGPT_IMAGEGEN_BACKEND`. |
+| `--profile auto` \| `relay` \| `NAME` | (web) Which Chrome profile to drive. `auto` (default): use the open Chrome if it's logged in, else auto-switch to a profile that is (detected offline from the cookie DB, read-only). `relay`: only the open Chrome. `"Profile 3"`: that profile. Note: *logged in* ≠ *able to generate* — a free-tier account can still hit its daily image cap. |
 | `--session NAME` | (web) Reuse a named Chrome tab group across runs instead of `imagegen-<pid>`. |
 | `--keep-tab` | (web) Leave the ChatGPT tab open after generating (default closes it). Useful for debugging. |
 | `-o PATH` | Always use when you know where the file should go in the repo. |

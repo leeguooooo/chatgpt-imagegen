@@ -100,6 +100,7 @@ chatgpt-imagegen "<prompt>" [options]
 | Flag | Default | Notes |
 | --- | --- | --- |
 | `--backend` | `auto` | `auto` \| `web` \| `codex`. `auto` prefers web (spares Codex-usage), falls back to codex if no logged-in browser. See [Backends](#backends). Also `CHATGPT_IMAGEGEN_BACKEND`. |
+| `--profile` | `auto` | *(web)* Which Chrome profile to drive. `auto`: use your open Chrome if it's logged in, else auto-switch to a profile that is (detected offline). `relay`: only your open Chrome. Or a name like `"Profile 3"`. |
 | `--session` | `imagegen-<pid>` | *(web)* Reuse a named `agent-browser` Chrome tab group across runs. |
 | `--keep-tab` | off | *(web)* Leave the ChatGPT tab open after generating (default closes it). |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created. A warning is printed when the suffix and `--format` disagree (e.g. `-o foo.jpg --format png`). |
@@ -110,7 +111,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.3.0`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.4.0`) and exit. |
 
 Examples:
 

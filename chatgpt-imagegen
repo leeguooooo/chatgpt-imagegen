@@ -46,7 +46,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
@@ -513,9 +513,76 @@ def _codex_token_present() -> bool:
     return bool(access)
 
 
-def _ab(ab: str, *ab_args: str, session: str, timeout: float) -> str:
-    """Run one agent-browser subcommand, return stdout. Raises GatewayError on failure."""
-    cmd = [ab, *ab_args, "--session", session]
+def _chrome_user_data_dirs() -> list[Path]:
+    home = Path.home()
+    return [
+        home / "Library" / "Application Support" / "Google" / "Chrome",  # macOS
+        home / ".config" / "google-chrome",                              # Linux
+        home / ".config" / "chromium",
+    ]
+
+
+def _detect_logged_in_profiles() -> list[str]:
+    """Chrome profile names with a live chatgpt.com session, freshest first.
+
+    Read-only and offline: each profile's `Cookies` SQLite is copied and queried
+    only for the `__Secure-next-auth.session-token` cookie's host/expiry — the
+    encrypted value is never read or decrypted. Detects *whether* a profile is
+    logged in, not which account; that's all the web backend needs to pick one.
+    """
+    import sqlite3
+
+    # Chrome stores expiry as microseconds since 1601-01-01; convert "now".
+    chrome_now_us = (time.time() + 11644473600) * 1_000_000
+    found: list[tuple[str, int]] = []
+    for base in _chrome_user_data_dirs():
+        if not base.is_dir():
+            continue
+        for prof in base.iterdir():
+            if not prof.is_dir() or not (prof / "Preferences").exists():
+                continue
+            db = next((c for c in (prof / "Network" / "Cookies", prof / "Cookies")
+                       if c.exists()), None)
+            if not db:
+                continue
+            tmp = None
+            try:
+                fd, tmp = tempfile.mkstemp(suffix=".db")
+                os.close(fd)
+                shutil.copy2(db, tmp)
+                con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+                row = con.execute(
+                    "SELECT MAX(expires_utc) FROM cookies "
+                    "WHERE host_key LIKE '%chatgpt.com%' "
+                    "AND name LIKE '__Secure-next-auth.session-token%'"
+                ).fetchone()
+                con.close()
+                exp = row[0] if row else None
+                if exp and exp > chrome_now_us:
+                    found.append((prof.name, exp))
+            except Exception:
+                pass
+            finally:
+                if tmp:
+                    try:
+                        os.remove(tmp)
+                    except Exception:
+                        pass
+    found.sort(key=lambda r: r[1], reverse=True)
+    return [name for name, _exp in found]
+
+
+def _ab(ab: str, *ab_args: str, session: str, timeout: float, profile: str | None = None) -> str:
+    """Run one agent-browser subcommand, return stdout. Raises GatewayError on failure.
+
+    ``profile`` (a Chrome profile name/path) is passed as agent-browser's global
+    ``--profile`` flag, which must precede the subcommand. Only the launching
+    ``open`` call needs it; later calls reuse the session's browser.
+    """
+    cmd = [ab]
+    if profile:
+        cmd += ["--profile", profile]
+    cmd += [*ab_args, "--session", session]
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, timeout=max(5.0, timeout)
@@ -568,7 +635,11 @@ _JS_STATE = r"""(() => {
   const fresh = [...document.querySelectorAll('img')]
     .map(i => i.currentSrc || i.src)
     .filter(s => re.test(s) && !seen.has(s));
-  return JSON.stringify({stop, fresh, last: fresh[fresh.length - 1] || null});
+  const a = document.querySelectorAll('[data-message-author-role="assistant"]');
+  const lastA = a[a.length - 1];
+  return JSON.stringify({stop, last: fresh[fresh.length - 1] || null,
+                         assistant: a.length > 0,
+                         atext: lastA ? lastA.textContent.trim().slice(0, 240) : ""});
 })()"""
 
 _JS_BASELINE = r"""(() => {
@@ -596,30 +667,6 @@ _JS_FETCH = r"""(async () => {
 })()"""
 
 
-def _web_not_logged_in(ab: str, session: str, timeout: float) -> bool:
-    """Best-effort check for a chatgpt.com login wall.
-
-    True if the page shows login/signup affordances (or redirected to an auth
-    URL) and no composer. On any uncertainty returns False — we only assert a
-    login wall when we can see one, so we never misroute a transient hiccup.
-    """
-    js = (
-        "(() => {"
-        "  const url = location.href;"
-        "  const onAuth = /\\/auth|\\/login|auth\\.openai\\.com/.test(url);"
-        "  const loginBtn = !!document.querySelector("
-        "    'a[href*=\"auth/login\"], [data-testid=\"login-button\"], "
-        "     [data-testid=\"welcome-login-button\"]');"
-        "  const composer = !!document.querySelector('#prompt-textarea');"
-        "  return JSON.stringify((onAuth || loginBtn) && !composer);"
-        "})()"
-    )
-    try:
-        return bool(_ab_eval(ab, js, session=session, timeout=min(15.0, timeout)))
-    except GatewayError:
-        return False
-
-
 def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[bytes, JsonDict]:
     """Generate an image by driving the user's logged-in ChatGPT browser.
 
@@ -639,45 +686,64 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     def remaining() -> float:
         return max(2.0, deadline - time.monotonic())
 
-    emit(f"opening ChatGPT (session={session})")
-    try:
-        # Capped low so an unreachable browser falls back to codex quickly in
-        # auto-mode instead of stalling on the connect for a minute.
-        _ab(ab, "open", WEB_NEW_CHAT_URL, session=session, timeout=min(30.0, remaining()))
-    except GatewayError as e:
-        # Couldn't even open a tab — the browser relay isn't reachable.
-        raise WebUnavailable(
-            f"couldn't drive the browser via agent-browser ({e}). Is Chrome open "
-            f"with the agent-browser extension connected?"
-        ) from None
+    # Decide which browser(s) to try, in order.
+    #   relay/off  → only the currently-open Chrome (extension relay).
+    #   auto       → relay FIRST (your open Chrome usually works and is best for
+    #                anti-detection), then any offline-detected profile that's
+    #                logged in to chatgpt.com — so we only switch profiles when
+    #                the open browser isn't logged in.
+    #   <name>     → only that profile.
+    # `None` in the list means "relay" (no --profile flag).
+    pl = (args.profile or "auto").strip().lower()
+    if pl in ("relay", "off", "current"):
+        candidates: list[str | None] = [None]
+    elif pl == "auto":
+        candidates = [None] + _detect_logged_in_profiles()
+    else:
+        candidates = [args.profile.strip()]
 
-    # Wait for the composer to exist, then capture the baseline set of image
-    # srcs already on the page so we never mistake a prior image for the new one.
-    composer_ok = False
-    for _ in range(20):
+    def _try_open(prof: str | None) -> bool:
+        """Open a fresh chat and wait for the composer. True if it appears."""
         try:
-            present = _ab_eval(
-                ab, "(() => JSON.stringify(!!document.querySelector('#prompt-textarea')))()",
-                session=session, timeout=min(20.0, remaining()),
-            )
+            _ab(ab, "open", WEB_NEW_CHAT_URL, session=session,
+                timeout=min(30.0, remaining()), profile=prof)
         except GatewayError:
-            present = False
-        if present:
-            composer_ok = True
+            return False
+        for _ in range(15):
+            try:
+                if _ab_eval(
+                    ab, "(() => JSON.stringify(!!document.querySelector('#prompt-textarea')))()",
+                    session=session, timeout=min(20.0, remaining()),
+                ):
+                    return True
+            except GatewayError:
+                pass
+            time.sleep(1.0)
+        return False
+
+    chosen: str | None = None
+    opened = False
+    for i, prof in enumerate(candidates):
+        label = "current Chrome (relay)" if prof is None else f"profile {prof!r}"
+        emit(f"opening ChatGPT via {label}")
+        if _try_open(prof):
+            chosen, opened = prof, True
+            emit(f"using {label}")
             break
-        time.sleep(1.0)
-    if not composer_ok:
-        # No composer: almost always a login wall. Confirm so the message — and
-        # the auto-router's fallback decision — are right.
-        if _web_not_logged_in(ab, session, remaining()):
-            raise WebUnavailable(
-                "the connected browser is not logged in to chatgpt.com — sign in "
-                "there, or the run will fall back to the codex backend."
-            )
+        if i < len(candidates) - 1:
+            try:  # clean up the non-logged-in attempt before trying the next
+                _ab(ab, "close", session=session, timeout=10.0)
+            except GatewayError:
+                pass
+    if not opened:
         raise WebUnavailable(
-            "ChatGPT composer (#prompt-textarea) never appeared (page didn't load "
-            "or the UI changed)."
+            "no logged-in ChatGPT browser available (tried the open Chrome"
+            + (" and detected profiles" if len(candidates) > 1 else "")
+            + "). Sign in to chatgpt.com, or use --backend codex."
         )
+
+    # Capture the baseline set of image srcs already on the page so we never
+    # mistake a prior image for the new one.
 
     baseline = _ab_eval(ab, _JS_BASELINE % json.dumps(WEB_IMG_SRC_RE),
                         session=session, timeout=min(20.0, remaining()))
@@ -716,7 +782,12 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     last_phase = ""
     final_src: str | None = None
     stable_src: str | None = None
-    saw_stop = False
+    # Idle = an assistant turn exists, nothing is streaming, and still no image.
+    # After ~16s of that we conclude the reply finished without an image (refusal,
+    # text-only, or an empty turn) instead of hanging until the total timeout.
+    idle_polls = 0
+    IDLE_LIMIT = 8
+    last_atext = ""
     while time.monotonic() < deadline:
         time.sleep(2.0)
         try:
@@ -726,28 +797,35 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
         if not isinstance(st, dict):
             continue
         if st.get("stop"):
-            saw_stop = True
             if last_phase != "generating":
                 last_phase = "generating"
                 emit("generating")
             stable_src = None
+            idle_polls = 0
             continue
         cur = st.get("last")
         if cur:
             if last_phase not in ("receiving image", "done"):
                 last_phase = "receiving image"
                 emit("receiving image")
+            idle_polls = 0
             # Require the same fresh src twice in a row before trusting it.
             if cur == stable_src:
                 final_src = cur
                 break
             stable_src = cur
-        elif saw_stop:
-            # Stream ended with no image — likely a refusal or a text-only reply.
-            raise GatewayError(
-                "ChatGPT finished without producing an image (it may have replied "
-                "with text or declined). Try rephrasing the prompt."
-            )
+        elif st.get("assistant"):
+            # Assistant turn present, not streaming, no new image yet.
+            if isinstance(st.get("atext"), str) and st["atext"]:
+                last_atext = st["atext"]
+            idle_polls += 1
+            if idle_polls >= IDLE_LIMIT:
+                reason = f' ChatGPT said: "{last_atext}"' if last_atext else ""
+                raise GatewayError(
+                    "ChatGPT finished without producing an image (text reply, "
+                    "refusal, or image quota reached)." + reason +
+                    " Try rephrasing, a different --profile, or --backend codex."
+                )
 
     if not final_src:
         raise GatewayError(
@@ -968,6 +1046,14 @@ def main() -> int:
         default=None,
         help="(web backend) agent-browser session name to reuse a Chrome tab "
              "group across runs (default: imagegen-<pid>).",
+    )
+    parser.add_argument(
+        "--profile",
+        default="auto",
+        help="(web backend) which Chrome profile to drive. auto (default): "
+             "offline-detect a profile that's logged in to chatgpt.com and use "
+             "the freshest; relay: use your currently-open Chrome via the "
+             "extension; or a profile name like \"Profile 3\".",
     )
     parser.add_argument(
         "--keep-tab",

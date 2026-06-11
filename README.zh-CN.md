@@ -98,6 +98,7 @@ chatgpt-imagegen "<prompt>" [options]
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | `--backend` | `auto` | `auto` \| `web` \| `codex`。`auto` 优先 web(省 Codex 用量),没有登录浏览器时回退 codex。见[两个后端](#两个后端)。也可用 `CHATGPT_IMAGEGEN_BACKEND`。 |
+| `--profile` | `auto` | *(web)* 驱动哪个 Chrome profile。`auto`:你开着的 Chrome 登录了就用它,否则自动换到一个登录了的(离线探测)。`relay`:只用你开着的 Chrome。或写 profile 名如 `"Profile 3"`。 |
 | `--session` | `imagegen-<pid>` | *(web)* 跨次运行复用一个命名的 `agent-browser` Chrome 标签组。 |
 | `--keep-tab` | 关 | *(web)* 出图后保留 ChatGPT 标签页(默认关闭它)。 |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | 输出文件;父目录自动创建。后缀与 `--format` 不一致时会告警(如 `-o foo.jpg --format png`)。 |
@@ -108,7 +109,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | 后端静默多少秒判定为**卡死**(早于总预算触发)。会被钳制到 `--timeout`。 |
 | `--quiet` | 关 | stdout **只**打印保存路径(适合 agent 管道)。进度仍走 stderr —— 用 `--no-progress` 静音。 |
 | `--no-progress` | 关 | 关掉 stderr 的进度时间线(错误仍打印)。 |
-| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.3.0`)后退出。 |
+| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.4.0`)后退出。 |
 
 示例:
 
