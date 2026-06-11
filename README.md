@@ -1,5 +1,7 @@
 # chatgpt-imagegen
 
+**English** | [中文](./README.zh-CN.md)
+
 **Generate images using your ChatGPT subscription — no `OPENAI_API_KEY` needed.**
 
 A tiny, zero-dependency Python CLI (and AI-agent skill) that talks directly to ChatGPT's internal `image_generation` tool. If you already pay for ChatGPT Plus / Pro / Team, you can already generate images — this just exposes that capability on the command line and to any AI agent.
@@ -41,6 +43,19 @@ The same subscription meters two separate buckets, and which one you spend depen
 **Default is `auto`**: it tries `web` first (to spare your Codex-usage limit) and falls back to `codex` only when no logged-in browser is reachable. If neither is set up, it tells you how to fix both. Force one with `--backend web` / `--backend codex`, or set `CHATGPT_IMAGEGEN_BACKEND`.
 
 > Why two? The consumer ChatGPT surface sits behind Cloudflare + a sentinel proof-of-work that only a real browser passes — that's why `web` drives a browser instead of calling an endpoint. The `codex/responses` surface has no such wall (it's the Codex CLI's sanctioned API), which is why `codex` can run headless — at the cost of billing the Codex-usage bucket.
+
+### Which backend for which machine
+
+The split follows what each machine actually has — and `auto` picks correctly on its own:
+
+| Machine | Has a logged-in ChatGPT browser? | Use | Why |
+| --- | --- | --- | --- |
+| **Your laptop / desktop** (interactive) | Yes — Chrome is already open and signed in | **`web`** | Spares your Codex-usage limit; it's just the app you already use. |
+| **A server / headless agent box** (e.g. a bot runner) | No — no GUI browser, no parked chatgpt.com session | **`codex`** | Headless, no browser needed; the natural fit for an automation box that already ran `codex login`. |
+
+So the `web` backend is **not** "better" everywhere — it needs a real, logged-in browser on that machine. A headless server has no such browser, so `auto` there will (correctly) fall back to `codex`. Making a server use `web` would mean running a persistent headed Chrome (with the stealth extension, kept logged in to chatgpt.com) — possible, but rarely worth it when that box already has `codex`.
+
+**The account caveat:** the `web` backend generates under **whatever account that browser is logged into** — which may differ from the account in `~/.codex/auth.json`. If you want a specific subscription's bucket, make sure the browser is signed in to that account.
 
 ## Install
 
@@ -195,7 +210,7 @@ English / Japanese auto-translations live at the same URLs under `/en/` and `/ja
 
 ### `web` backend (default)
 
-Drives your logged-in browser via `agent-browser` so generation runs on the consumer ChatGPT surface — which a headless client can't reach, because it sits behind Cloudflare bot-detection **and** a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token). A real browser passes both transparently. The flow:
+Drives your logged-in browser via `agent-browser-stealth` so generation runs on the consumer ChatGPT surface — which a headless client can't reach, because it sits behind Cloudflare bot-detection **and** a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token). A real browser passes both transparently. The flow:
 
 ```
 chatgpt-imagegen --backend web
