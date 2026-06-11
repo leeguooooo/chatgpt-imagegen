@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 470" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#656d76"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1a7f37"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#bc4c00"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="470" fill="#ffffff"/>
+
+  <!-- title -->
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#1f2328">chatgpt-imagegen — two backends, one ChatGPT account</text>
+  <text x="30" y="60" font-size="13" fill="#656d76">Default <tspan font-family="ui-monospace,Menlo,monospace" fill="#1f2328">auto</tspan> prefers web (spares Codex usage); falls back to codex only when no logged-in browser is reachable.</text>
+
+  <!-- start: CLI -->
+  <rect x="24" y="200" width="150" height="68" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="99" y="230" font-size="14" font-weight="700" text-anchor="middle" fill="#1f2328">your prompt</text>
+  <text x="99" y="249" font-size="12" text-anchor="middle" fill="#656d76">CLI / agent skill</text>
+
+  <!-- auto router -->
+  <rect x="206" y="206" width="104" height="56" rx="10" fill="#eef2f5" stroke="#a0a8b0"/>
+  <text x="258" y="230" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">--backend</text>
+  <text x="258" y="248" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">auto</text>
+
+  <line x1="174" y1="234" x2="206" y2="234" stroke="#656d76" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <!-- WEB lane -->
+  <line x1="310" y1="220" x2="360" y2="118" stroke="#1a7f37" stroke-width="1.8" marker-end="url(#arrowGreen)"/>
+  <text x="320" y="150" font-size="12" font-weight="700" fill="#1a7f37">web (default)</text>
+
+  <rect x="360" y="84" width="196" height="64" rx="10" fill="#eaf6ee" stroke="#1a7f37"/>
+  <text x="458" y="110" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">agent-browser-stealth</text>
+  <text x="458" y="129" font-size="12" text-anchor="middle" fill="#656d76">→ your logged-in Chrome</text>
+
+  <line x1="556" y1="116" x2="596" y2="116" stroke="#1a7f37" stroke-width="1.8" marker-end="url(#arrowGreen)"/>
+
+  <rect x="596" y="84" width="184" height="64" rx="10" fill="#eaf6ee" stroke="#1a7f37"/>
+  <text x="688" y="110" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">ChatGPT web chat</text>
+  <text x="688" y="129" font-size="12" text-anchor="middle" fill="#656d76">image_generation</text>
+
+  <!-- web bucket badge -->
+  <rect x="360" y="160" width="420" height="26" rx="13" fill="#dafbe1" stroke="#1a7f37"/>
+  <text x="570" y="178" font-size="12" font-weight="600" text-anchor="middle" fill="#1a7f37">ChatGPT conversation bucket · free tier works · no Codex usage spent</text>
+
+  <!-- CODEX lane -->
+  <line x1="310" y1="248" x2="360" y2="350" stroke="#bc4c00" stroke-width="1.8" marker-end="url(#arrowOrange)"/>
+  <text x="318" y="322" font-size="12" font-weight="700" fill="#bc4c00">codex (fallback)</text>
+
+  <rect x="360" y="322" width="196" height="64" rx="10" fill="#fff1e7" stroke="#bc4c00"/>
+  <text x="458" y="348" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">POST codex/responses</text>
+  <text x="458" y="367" font-size="12" text-anchor="middle" fill="#656d76">~/.codex/auth.json</text>
+
+  <line x1="556" y1="354" x2="596" y2="354" stroke="#bc4c00" stroke-width="1.8" marker-end="url(#arrowOrange)"/>
+
+  <rect x="596" y="322" width="184" height="64" rx="10" fill="#fff1e7" stroke="#bc4c00"/>
+  <text x="688" y="348" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">ChatGPT backend</text>
+  <text x="688" y="367" font-size="12" text-anchor="middle" fill="#656d76">(headless)</text>
+
+  <!-- codex bucket badge -->
+  <rect x="360" y="398" width="420" height="26" rx="13" fill="#ffe7d4" stroke="#bc4c00"/>
+  <text x="570" y="416" font-size="12" font-weight="600" text-anchor="middle" fill="#bc4c00">Codex-usage bucket (metered) · needs codex login</text>
+
+  <!-- output -->
+  <rect x="826" y="200" width="120" height="68" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="886" y="230" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2328">image file</text>
+  <text x="886" y="249" font-size="12" text-anchor="middle" fill="#656d76">png / jpg / webp</text>
+
+  <path d="M780,116 C806,116 820,200 825,224" fill="none" stroke="#1a7f37" stroke-width="1.8" marker-end="url(#arrowGreen)"/>
+  <path d="M780,354 C806,354 820,270 825,246" fill="none" stroke="#bc4c00" stroke-width="1.8" marker-end="url(#arrowOrange)"/>
+</svg>
