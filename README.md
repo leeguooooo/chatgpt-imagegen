@@ -114,7 +114,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.5.0`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.6.0`) and exit. |
 
 Examples:
 
@@ -166,7 +166,7 @@ done
 wait
 ```
 
-The **`web` backend must run sequentially** — parallel processes race to launch the same Chrome profiles, hit the profile lock, and all fail (measured: 3 parallel web runs each burned through every candidate profile and died). One web generation at a time.
+The **`web` backend self-serializes**: it drives the one shared logged-in Chrome, so concurrent runs would cross-contaminate each other's images (a sibling run's fresh `<img>` gets grabbed) — see [#7](https://github.com/leeguooooo/chatgpt-imagegen/issues/7). Since v0.6.0, web runs take a cross-process lock and **queue automatically**, so firing several `--backend web` at once is *safe* — they just run one at a time (the waiters print a "waiting…" line). True parallel web is blocked on chrome-use isolating concurrent sessions ([chrome-use#12](https://github.com/leeguooooo/chrome-use/issues/12)); for parallelism today use `--backend codex`.
 
 Caveat: subscription quota is shared with the ChatGPT web app and Codex CLI. Don't run sustained batches (>10 images/min) — you'll eventually hit per-day rate limits. For bulk batches, use the official `/v1/images/generations` API with an `OPENAI_API_KEY`.
 

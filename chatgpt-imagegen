@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import json
 import os
 import re
@@ -45,10 +46,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
@@ -634,13 +636,23 @@ def _ab_eval(ab: str, js: str, session: str, timeout: float) -> Any:
 # JS: snapshot the generation state — whether a stop/streaming control is still
 # present, and the newest image asset src that was NOT already on the page when
 # we started (baseline list passed in). Returned as a JSON string.
+# Both the baseline and the freshness scan are scoped to `main img` — this
+# tab's conversation thread — never document-wide. ChatGPT pushes an "Image
+# created" toast (with a thumbnail whose src matches the asset regex) into ANY
+# open chatgpt.com tab when some OTHER conversation finishes an image; the
+# toast lives in a portal outside <main>, so a document-wide scan grabs that
+# sibling's image (the cross-contaminated/duplicate outputs of issue #7) while
+# a main-scoped scan can't. NOTE the generated <img> is NOT inside the
+# [data-message-author-role="assistant"] element (verified in the live DOM:
+# main#main > #thread > section[data-testid=conversation-turn-N] > … > img),
+# so don't be tempted to scope tighter than <main>.
 _JS_STATE = r"""(() => {
   const seen = new Set(%s);
   const stop = !!document.querySelector(
     'button[data-testid="stop-button"], button[aria-label*="Stop" i]'
   );
   const re = new RegExp(%s);
-  const fresh = [...document.querySelectorAll('img')]
+  const fresh = [...document.querySelectorAll('main img')]
     .map(i => i.currentSrc || i.src)
     .filter(s => re.test(s) && !seen.has(s));
   const a = document.querySelectorAll('[data-message-author-role="assistant"]');
@@ -652,7 +664,7 @@ _JS_STATE = r"""(() => {
 
 _JS_BASELINE = r"""(() => {
   const re = new RegExp(%s);
-  const srcs = [...document.querySelectorAll('img')]
+  const srcs = [...document.querySelectorAll('main img')]
     .map(i => i.currentSrc || i.src).filter(s => re.test(s));
   return JSON.stringify(srcs);
 })()"""
@@ -763,6 +775,44 @@ def _enter_project(ab: str, session: str, name: str, remaining, emit) -> None:
                 pass
 
 
+@contextmanager
+def _web_serialize_lock(progress: bool, start: float) -> "Iterator[None]":
+    """Serialize web-backend runs across processes (issue #7).
+
+    Every web run drives the ONE shared, logged-in Chrome through chrome-use.
+    Running several at once makes them cross-contaminate each other's images — a
+    fresh ``<img>`` produced by a sibling run gets picked up and downloaded into
+    the wrong file (observed: swapped images, byte-identical outputs). Until
+    chrome-use isolates concurrent sessions (leeguooooo/chrome-use#12),
+    fire-and-forget parallel web calls are made *safe* here: each queues behind
+    the previous instead of corrupting. The codex backend is independent HTTP
+    and is intentionally NOT locked. The ``flock`` auto-releases if the holder
+    dies, so a crash can't wedge the queue.
+    """
+    path = os.path.join(tempfile.gettempdir(), "chatgpt-imagegen-web.lock")
+    f = open(path, "w")
+    try:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if progress:
+                print(
+                    f"[{time.monotonic() - start:6.1f}s] waiting for another web "
+                    "generation to finish (web runs are serialized; see chrome-use#12)",
+                    file=sys.stderr,
+                )
+            fcntl.flock(f, fcntl.LOCK_EX)  # block until the holder releases
+        try:
+            yield
+        finally:
+            try:
+                fcntl.flock(f, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        f.close()
+
+
 def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[bytes, JsonDict]:
     """Generate an image by driving the user's logged-in ChatGPT browser.
 
@@ -772,7 +822,10 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     if ab is None:
         raise WebUnavailable(f"`chrome-use` is not installed — {_AB_INSTALL_HINT}")
     session = args.session or f"imagegen-{os.getpid()}"
-    deadline = start + args.timeout
+    # Budget the generation from NOW, not from process start: web runs may have
+    # blocked on the serialize lock (issue #7) before reaching here, and that
+    # queue wait must not eat into the --timeout image budget.
+    deadline = time.monotonic() + args.timeout
     user_text = _build_user_text(args.prompt, args.size, args.format)
 
     def emit(msg: str) -> None:
@@ -1082,13 +1135,15 @@ def _dispatch(
 
     if args.backend == "web":
         try:
-            return run_web(args, progress, start)
+            with _web_serialize_lock(progress, start):
+                return run_web(args, progress, start)
         except GatewayError as e:
             sys.exit(str(e))
 
     # auto
     try:
-        return run_web(args, progress, start)
+        with _web_serialize_lock(progress, start):
+            return run_web(args, progress, start)
     except WebUnavailable as e:
         if _codex_token_present():
             if _find_agent_browser() is None:

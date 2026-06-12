@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.5.0"
+version: "0.6.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system."
 ---
 
@@ -128,7 +128,7 @@ The script prints **just the saved path on stdout** in every mode; the readable 
 - **Image quality** is chosen by the backend; this skill has no `--quality` flag, and the subscription path does not honour explicit quality requests reliably. Don't promise a specific quality level to the user. If they need explicit `quality=high`, route them to the official `/v1/images/generations` API with their own `OPENAI_API_KEY`.
 - `background: transparent` is **not supported** on the subscription path.
 - A single image typically takes **15–60 s**, but large or detailed ones occasionally run **2–3 min**. The default `--timeout` is 300 s to cover this; a genuine hang is caught sooner by the `--stall-timeout` idle window (default 120 s).
-- **Parallel execution: `codex` backend only** — the codex backend handles ≥4 concurrent requests with no serialization or 429s on a Plus account; fire with explicit `--backend codex` plus shell `&` + `wait`. The **`web` backend must run sequentially**: parallel processes race to launch the same Chrome profiles, hit the profile lock, and all fail (measured). Several assets on the web backend = one `chatgpt-imagegen` call at a time. Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
+- **Parallel execution: `codex` backend only** — the codex backend handles ≥4 concurrent requests with no serialization or 429s on a Plus account; fire with explicit `--backend codex` plus shell `&` + `wait`. The **`web` backend self-serializes** (since 0.6.0): concurrent web runs take a cross-process lock and queue one at a time (waiters print "waiting…"), so firing several at once is safe but not faster than sequential. Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
 - Subscription quota is **shared** with the user's interactive ChatGPT use. Don't bulk-generate (>10 images / minute sustained) without permission — you'll hit per-day caps.
 
 ## Error handling
@@ -154,7 +154,7 @@ The script prints **just the saved path on stdout** in every mode; the readable 
 - Opens a *regular* `https://chatgpt.com/` chat (Temporary Chat disables the image tool).
 - Resolves the target ChatGPT Project from inside the authenticated page (undocumented endpoints, probed live): `GET /backend-api/gizmos/snorlax/sidebar` lists projects (a project is a gizmo with id `g-p-…`); `POST /backend-api/projects {name, instructions}` creates one. It then navigates to `https://chatgpt.com/g/<g-p-id>/project` and submits from that composer, which files the conversation inside the project. Any failure degrades to a plain chat with a stderr warning.
 - Submits via `keyboard type` + Enter — **not** `fill`: the composer is a ProseMirror/React contenteditable, and `fill` mutates the DOM without firing the input events React needs, so the send button stays bound to empty state. A send-button click is the fallback.
-- Polls page state via `eval`: waits until the streaming/stop control is gone AND a brand-new `<img>` (src matching `estuary/content|files/download|oaiusercontent`) is present and stable across two reads.
+- Polls page state via `eval`: waits until the streaming/stop control is gone AND a brand-new `<img>` (src matching `estuary/content|files/download|oaiusercontent`) is present and stable across two reads. The img scan is scoped to `main img` (the tab's own conversation thread) — ChatGPT pushes an "Image created" toast with a matching thumbnail into any open tab when *another* conversation finishes an image, and a document-wide scan grabs that sibling's image (issue #7). The generated img is NOT inside `[data-message-author-role="assistant"]`, so `<main>` is the right scope.
 - Downloads the bytes with an in-page `fetch(src, {credentials:'include'})` → base64, so the browser's own session cookies authorize the signed asset URL. No tokens leave the browser.
 
 **codex backend (`run_codex`)**

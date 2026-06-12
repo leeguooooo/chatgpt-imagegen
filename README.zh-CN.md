@@ -112,7 +112,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | 后端静默多少秒判定为**卡死**(早于总预算触发)。会被钳制到 `--timeout`。 |
 | `--quiet` | 关 | stdout **只**打印保存路径(适合 agent 管道)。进度仍走 stderr —— 用 `--no-progress` 静音。 |
 | `--no-progress` | 关 | 关掉 stderr 的进度时间线(错误仍打印)。 |
-| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.5.0`)后退出。 |
+| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.6.0`)后退出。 |
 
 示例:
 
@@ -164,7 +164,7 @@ done
 wait
 ```
 
-**`web` 后端必须串行** —— 多个进程并行会同时去 launch 同一批 Chrome profile,撞 profile 进程锁后全军覆没(实测:3 个并行 web 运行把候选 profile 挨个烧完、全部失败)。web 出图一次跑一张。
+**`web` 后端自动串行**:它驱动同一个登录的 Chrome,并发会互相串图(抓到别的 run 刚生成的 `<img>`)——见 [#7](https://github.com/leeguooooo/chatgpt-imagegen/issues/7)。从 v0.6.0 起,web 运行会拿一把跨进程锁**自动排队**,所以一次并发 fire 多个 `--backend web` 是**安全**的——只是会一张一张跑(等待者会打印 "waiting…")。真正的并行 web 取决于 chrome-use 隔离并发 session([chrome-use#12](https://github.com/leeguooooo/chrome-use/issues/12));要并行现在请用 `--backend codex`。
 
 注意:订阅额度和 ChatGPT 网页 app、Codex CLI **共享**。别持续狂跑(>10 张/分钟)—— 早晚会撞每日限流。批量需求请用官方 `/v1/images/generations` API + `OPENAI_API_KEY`。
 
