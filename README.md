@@ -38,7 +38,7 @@ The same subscription meters two separate buckets, and which one you spend depen
 
 | Backend | How it generates | Bucket spent | Needs |
 | --- | --- | --- | --- |
-| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth), the `agent-browser`/`abs` command) and generates in a normal chat — the same surface as typing in the app. The *stealth* fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | Any logged-in chatgpt.com browser (**free tier works**) + `agent-browser-stealth`. |
+| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`chrome-use`](https://github.com/leeguooooo/chrome-use), formerly `agent-browser-stealth`) and generates in a normal chat — the same surface as typing in the app. Its real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. Each run's chat is filed under a ChatGPT **Project** (default `imagegen`, created on first use) so it doesn't litter your history. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | Any logged-in chatgpt.com browser (**free tier works**) + `chrome-use`. |
 | **`codex`** | Headless POST to `backend-api/codex/responses`, reusing `~/.codex/auth.json`. | **Codex-usage** (the metered bucket). | `codex login`. |
 
 **Default `auto`** tries `web` first (to spare Codex-usage) and falls back to `codex` when no logged-in browser is reachable. Force one with `--backend web` / `--backend codex` (or `CHATGPT_IMAGEGEN_BACKEND`).
@@ -54,15 +54,17 @@ You need Python 3.10+, a ChatGPT subscription, and **at least one backend** (`au
 
 **`codex` backend** — `npm i -g @openai/codex` then `codex login` (writes `~/.codex/auth.json`).
 
-**`web` backend** — [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth) (a stealth fork of `agent-browser`; it drives your real logged-in Chrome via an extension, which is what passes Cloudflare + ChatGPT's anti-bot check) connected to a Chrome signed in to chatgpt.com:
+**`web` backend** — [`chrome-use`](https://github.com/leeguooooo/chrome-use) (formerly `agent-browser-stealth`; it drives your real logged-in Chrome via an extension, which is what passes Cloudflare + ChatGPT's anti-bot check) connected to a Chrome signed in to chatgpt.com:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
-agent-browser extension install
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/chrome-use/main/install.sh | sh
+chrome-use extension install
 # then: add the Chrome extension → restart Chrome → sign in to chatgpt.com
 ```
 
-Extension: [Chrome Web Store](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk).
+Extension: [Chrome Web Store](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk). Older installs exposing the binary as `agent-browser` / `abs` keep working — the CLI accepts both names.
+
+> No `chrome-use`? Nothing breaks and nothing gets installed behind your back: `auto` mode falls back to `codex` and prints a one-line tip that installing `chrome-use` makes generation cost no Codex-usage.
 
 ### Option A — for AI agents (recommended)
 
@@ -101,7 +103,8 @@ chatgpt-imagegen "<prompt>" [options]
 | --- | --- | --- |
 | `--backend` | `auto` | `auto` \| `web` \| `codex`. `auto` prefers web (spares Codex-usage), falls back to codex if no logged-in browser. See [Backends](#backends). Also `CHATGPT_IMAGEGEN_BACKEND`. |
 | `--profile` | `auto` | *(web)* Which Chrome profile to drive. `auto`: use your open Chrome if it's logged in, else auto-switch to a profile that is (detected offline). `relay`: only your open Chrome. Or a name like `"Profile 3"`. |
-| `--session` | `imagegen-<pid>` | *(web)* Reuse a named `agent-browser` Chrome tab group across runs. |
+| `--session` | `imagegen-<pid>` | *(web)* Reuse a named `chrome-use` Chrome tab group across runs. |
+| `--project` | `imagegen` | *(web)* ChatGPT Project to file the conversation under — matched by exact name, **created on first use**, reused afterwards. Pass `--project ""` for a plain top-level chat. Also `CHATGPT_IMAGEGEN_PROJECT`. Failures degrade to a plain chat with a warning, never block the run. |
 | `--keep-tab` | off | *(web)* Leave the ChatGPT tab open after generating (default closes it). |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created. A warning is printed when the suffix and `--format` disagree (e.g. `-o foo.jpg --format png`). |
 | `--size` | `auto` | `auto` or any `WIDTHxHEIGHT`. Verified working: `1024x1024`, `1024x1536`, `1536x1024`. Larger sizes are forwarded as-is. |
@@ -111,7 +114,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.4.0`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.5.0`) and exit. |
 
 Examples:
 
@@ -185,19 +188,21 @@ curl https://api.openai.com/v1/images/generations \
 
 ### `web` backend (default)
 
-Drives your logged-in browser via `agent-browser-stealth` so generation runs on the consumer ChatGPT surface — which a headless client can't reach, because it sits behind Cloudflare bot-detection **and** a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token). A real browser passes both transparently. The flow:
+Drives your logged-in browser via `chrome-use` so generation runs on the consumer ChatGPT surface — which a headless client can't reach, because it sits behind Cloudflare bot-detection **and** a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token). A real browser passes both transparently. The flow:
 
 ```
 chatgpt-imagegen --backend web
    │
-   ├── agent-browser open https://chatgpt.com/   (a *regular* chat — Temporary Chat disables the image tool)
+   ├── chrome-use open https://chatgpt.com/      (a *regular* chat — Temporary Chat disables the image tool)
+   ├── resolve the ChatGPT Project (--project)    (in-page fetch: list via gizmos/snorlax/sidebar,
+   │   and open chatgpt.com/g/<g-p-id>/project     create via POST /backend-api/projects if absent)
    ├── type the prompt with real keystrokes        (ProseMirror/React composer ignores DOM-only `fill`)
    ├── poll the page: wait until streaming stops AND a new <img> asset is stable
    └── fetch the asset bytes in-page (credentials:'include') → base64 → save
        (the signed estuary/content URL is authorized by the browser's own cookies)
 ```
 
-No tokens leave the browser. One chat is left in your history per run.
+No tokens leave the browser. Each run's chat lands inside the `imagegen` Project (auto-created) instead of the top-level history; pass `--project ""` to opt out.
 
 ### `codex` backend
 

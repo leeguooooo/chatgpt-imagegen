@@ -36,7 +36,7 @@ OpenAI 的图像生成有两条完全独立的路:
 
 | 后端 | 怎么生成 | 花哪个桶 | 前置条件 |
 | --- | --- | --- | --- |
-| **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth),命令名 `agent-browser`/`abs`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠 *stealth* 分支的真 Chrome 连接,过掉 Cloudflare + sentinel 工作量证明(无头/普通客户端过不了)。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 任意登录了 chatgpt.com 的浏览器(**免费档也行**)+ `agent-browser-stealth`。 |
+| **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`chrome-use`](https://github.com/leeguooooo/chrome-use),原名 `agent-browser-stealth`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠真 Chrome 连接过掉 Cloudflare + sentinel 工作量证明(无头/普通客户端过不了)。每次的对话自动归档进一个 ChatGPT **项目**(默认 `imagegen`,首次自动创建),不再刷屏历史列表。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 任意登录了 chatgpt.com 的浏览器(**免费档也行**)+ `chrome-use`。 |
 | **`codex`** | 无头 POST 到 `backend-api/codex/responses`,复用 `~/.codex/auth.json`。 | **Codex 用量**(计量的那个桶)。 | `codex login`。 |
 
 **默认 `auto`**:先试 `web`(省 Codex 用量),没有可用登录浏览器时回退 `codex`。用 `--backend web` / `--backend codex` 强制其一(或环境变量 `CHATGPT_IMAGEGEN_BACKEND`)。
@@ -52,15 +52,17 @@ OpenAI 的图像生成有两条完全独立的路:
 
 **`codex` 后端** —— `npm i -g @openai/codex` 然后 `codex login`(写入 `~/.codex/auth.json`)。
 
-**`web` 后端** —— 装好 [`agent-browser-stealth`](https://github.com/leeguooooo/agent-browser-stealth)(`agent-browser` 的 stealth 分支;它通过扩展驱动你真实已登录的 Chrome,正是这点能过 Cloudflare + ChatGPT 反爬),并连到一个登录了 chatgpt.com 的 Chrome:
+**`web` 后端** —— 装好 [`chrome-use`](https://github.com/leeguooooo/chrome-use)(原名 `agent-browser-stealth`;它通过扩展驱动你真实已登录的 Chrome,正是这点能过 Cloudflare + ChatGPT 反爬),并连到一个登录了 chatgpt.com 的 Chrome:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
-agent-browser extension install
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/chrome-use/main/install.sh | sh
+chrome-use extension install
 # 然后:给 Chrome 装扩展 → 重启 Chrome → 登录 chatgpt.com
 ```
 
-扩展:[Chrome 应用商店](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk)。
+扩展:[Chrome 应用商店](https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk)。旧版装出来的 `agent-browser` / `abs` 命令名继续可用,CLI 两个名字都认。
+
+> 没装 `chrome-use`?不影响出图,也**绝不会替你自动安装**:`auto` 模式自己回退到 `codex`,只在 stderr 轻轻提示一句"装上 chrome-use 出图可以不耗 Codex 额度"。
 
 ### 方式 A —— 给 AI agent 用(推荐)
 
@@ -99,7 +101,8 @@ chatgpt-imagegen "<prompt>" [options]
 | --- | --- | --- |
 | `--backend` | `auto` | `auto` \| `web` \| `codex`。`auto` 优先 web(省 Codex 用量),没有登录浏览器时回退 codex。见[两个后端](#两个后端)。也可用 `CHATGPT_IMAGEGEN_BACKEND`。 |
 | `--profile` | `auto` | *(web)* 驱动哪个 Chrome profile。`auto`:你开着的 Chrome 登录了就用它,否则自动换到一个登录了的(离线探测)。`relay`:只用你开着的 Chrome。或写 profile 名如 `"Profile 3"`。 |
-| `--session` | `imagegen-<pid>` | *(web)* 跨次运行复用一个命名的 `agent-browser` Chrome 标签组。 |
+| `--session` | `imagegen-<pid>` | *(web)* 跨次运行复用一个命名的 `chrome-use` Chrome 标签组。 |
+| `--project` | `imagegen` | *(web)* 对话归档到哪个 ChatGPT 项目 —— 按名字精确匹配,**没有就自动创建**,有就直接复用。传 `--project ""` 用普通顶层对话。也可用 `CHATGPT_IMAGEGEN_PROJECT`。项目步骤失败只降级为普通对话并告警,绝不阻塞出图。 |
 | `--keep-tab` | 关 | *(web)* 出图后保留 ChatGPT 标签页(默认关闭它)。 |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | 输出文件;父目录自动创建。后缀与 `--format` 不一致时会告警(如 `-o foo.jpg --format png`)。 |
 | `--size` | `auto` | `auto` 或任意 `WIDTHxHEIGHT`。已验证:`1024x1024`、`1024x1536`、`1536x1024`。更大尺寸原样透传。 |
@@ -109,7 +112,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | 后端静默多少秒判定为**卡死**(早于总预算触发)。会被钳制到 `--timeout`。 |
 | `--quiet` | 关 | stdout **只**打印保存路径(适合 agent 管道)。进度仍走 stderr —— 用 `--no-progress` 静音。 |
 | `--no-progress` | 关 | 关掉 stderr 的进度时间线(错误仍打印)。 |
-| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.4.0`)后退出。 |
+| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.5.0`)后退出。 |
 
 示例:
 
@@ -183,19 +186,21 @@ curl https://api.openai.com/v1/images/generations \
 
 ### `web` 后端(默认)
 
-经 `agent-browser-stealth` 驱动你登录的浏览器,让出图跑在消费级 ChatGPT 界面上 —— 无头客户端够不着,因为它挂在 Cloudflare 反爬**和** sentinel 工作量证明后面(`backend-api/sentinel/chat-requirements` + 页面内 `sentinel/sdk.js` 算 token)。真浏览器透明通过两者。流程:
+经 `chrome-use` 驱动你登录的浏览器,让出图跑在消费级 ChatGPT 界面上 —— 无头客户端够不着,因为它挂在 Cloudflare 反爬**和** sentinel 工作量证明后面(`backend-api/sentinel/chat-requirements` + 页面内 `sentinel/sdk.js` 算 token)。真浏览器透明通过两者。流程:
 
 ```
 chatgpt-imagegen --backend web
    │
-   ├── agent-browser open https://chatgpt.com/   (普通对话 —— Temporary Chat 禁用了出图工具)
+   ├── chrome-use open https://chatgpt.com/      (普通对话 —— Temporary Chat 禁用了出图工具)
+   ├── 解析 ChatGPT 项目 (--project)              (页面内 fetch:gizmos/snorlax/sidebar 列项目,
+   │   并打开 chatgpt.com/g/<g-p-id>/project       没有就 POST /backend-api/projects 创建)
    ├── 用真实键盘输入打提示词                       (ProseMirror/React 输入框不认纯 DOM 的 `fill`)
    ├── 轮询页面:等流结束 且 新的 <img> 资源稳定
    └── 在页面内 fetch 资源字节 (credentials:'include') → base64 → 存盘
        (签名的 estuary/content URL 由浏览器自己的 cookie 授权)
 ```
 
-token 不出浏览器。每次运行会在你的历史里留一条对话。
+token 不出浏览器。每次的对话落在 `imagegen` 项目里(自动创建),不再堆在顶层历史;传 `--project ""` 可退回旧行为。
 
 ### `codex` 后端
 

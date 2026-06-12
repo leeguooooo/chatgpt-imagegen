@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.4.0"
+version: "0.5.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system."
 ---
 
@@ -12,34 +12,43 @@ A standalone Python CLI that produces images via the user's ChatGPT subscription
 
 | Backend | Surface | Usage bucket | Needs | Speed |
 | --- | --- | --- | --- | --- |
-| **`web`** | Drives the user's logged-in ChatGPT browser (via **`agent-browser-stealth`**, the `agent-browser`/`abs` command) and generates in a regular chat — the same surface as typing in the app. The stealth fork is what clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does **not** consume the metered Codex-usage limit. Works on **any** account, **including free tier** (subject to its daily image cap). | `agent-browser-stealth` installed and its extension connected to a Chrome **signed in to chatgpt.com**. | ~30–60 s; one chat is left in history per run. |
+| **`web`** | Drives the user's logged-in ChatGPT browser (via **`chrome-use`**, formerly `agent-browser-stealth`; older installs expose the same binary as `agent-browser`/`abs`) and generates in a regular chat — the same surface as typing in the app. Its real-Chrome connect is what clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does **not** consume the metered Codex-usage limit. Works on **any** account, **including free tier** (subject to its daily image cap). | `chrome-use` installed and its extension connected to a Chrome **signed in to chatgpt.com**. | ~30–60 s; each run's chat is filed under a ChatGPT **Project** (default `imagegen`, auto-created) instead of littering the history. |
 | **`codex`** | Headless POST to `chatgpt.com/backend-api/codex/responses` with the `image_generation` tool, reusing `~/.codex/auth.json`. | **Codex-usage** (metered — this is the bucket the user usually wants to spare). | `codex login` (writes `~/.codex/auth.json`). | Fast; no browser, no history. |
 
-**Default is `auto`** (`--backend auto`, or `CHATGPT_IMAGEGEN_BACKEND`): it tries **web first** because that spares the Codex-usage limit, and falls back to **codex only when web is unavailable** — i.e. `agent-browser` isn't installed, the browser isn't reachable, or chatgpt.com isn't logged in. The two not-set-up cases are handled explicitly:
+**Default is `auto`** (`--backend auto`, or `CHATGPT_IMAGEGEN_BACKEND`): it tries **web first** because that spares the Codex-usage limit, and falls back to **codex only when web is unavailable** — i.e. `chrome-use` isn't installed, the browser isn't reachable, or chatgpt.com isn't logged in. The two not-set-up cases are handled explicitly:
 
-- **Browser not logged in / agent-browser missing** → auto silently falls back to codex (a one-line notice prints to stderr). If codex is *also* not set up, it exits naming both fixes.
+- **Browser not logged in / chrome-use missing** → auto silently falls back to codex (a one-line notice prints to stderr). If codex is *also* not set up, it exits naming both fixes.
 - **codex not logged in** (`~/.codex/auth.json` absent) → auto still uses web; codex is only the fallback.
 
 Auto does **not** fall back to codex if web was reachable but the generation itself failed after submitting — that would spend the very bucket auto-mode protects. In that case it errors and tells you to rerun with `--backend codex` if you want the Codex-usage path. Force a single backend with `--backend web` or `--backend codex`.
 
 ## Prerequisites
 
-**For the default `web` backend:** the user must have **`agent-browser-stealth`** installed (it provides the `agent-browser` / `abs` command) and its extension connected to a Chrome that is signed in to chatgpt.com. The *stealth* fork specifically is required — its real-logged-in-Chrome connect is what passes Cloudflare's bot-detection; a plain `agent-browser` may not. The "Temporary Chat" mode disables image generation, so this backend always opens a *regular* chat.
+**For the default `web` backend:** the user must have **`chrome-use`** (formerly `agent-browser-stealth`; older installs expose the same binary as `agent-browser` / `abs`) and its extension connected to a Chrome that is signed in to chatgpt.com. chrome-use specifically is required — its real-logged-in-Chrome connect is what passes Cloudflare's bot-detection; a plain headless driver will not. The "Temporary Chat" mode disables image generation, so this backend always opens a *regular* chat.
 
-Setup (point the user here if the CLI errors that the binary is missing, or fall back to `--backend codex`):
+### Install policy — never install chrome-use for the user
+
+If `chrome-use` is **not installed**, do **not** install it on your own initiative:
+
+1. **Generate anyway** via the codex fallback (auto mode does this by itself) — the task comes first.
+2. Add a **single gentle tip** to your reply, e.g.: *"提示：装上 chrome-use 后，出图会走你已登录的 ChatGPT 浏览器，不消耗 Codex 额度。想配的话我可以一步步带你装好（含浏览器插件）。"* — and stop there.
+3. **Only when the user explicitly says yes**, walk them through the guided setup below, step by step, verifying each step before the next.
+
+Guided setup (opt-in only):
 
 ```bash
-# 1. Install the CLI (no npm, no token — provides `agent-browser` / `abs`)
-curl -fsSL https://raw.githubusercontent.com/leeguooooo/agent-browser-stealth/main/install.sh | sh
+# 1. Install the CLI (no npm, no token — provides `chrome-use`)
+curl -fsSL https://raw.githubusercontent.com/leeguooooo/chrome-use/main/install.sh | sh
 # 2. Register the native-messaging host
-agent-browser extension install
+chrome-use extension install
 # 3. Add the Chrome extension, then restart Chrome:
 #    https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk
 # 4. Sign in to https://chatgpt.com in that Chrome
+# 5. Verify: a quick `chatgpt-imagegen "test" --backend web` should print "using current Chrome (relay)"
 ```
 
-- **Repo:** https://github.com/leeguooooo/agent-browser-stealth
-- The `agent-browser` skill (`agent-browser skills get core`) covers the extension-connect flow in depth.
+- **Repo:** https://github.com/leeguooooo/chrome-use
+- The `chrome-use` skill (`chrome-use skills get core`) covers the extension-connect flow in depth.
 
 **For the `codex` backend:** the user must have run, **once, ever**:
 
@@ -81,6 +90,7 @@ Useful flags:
 | `--backend auto` \| `web` \| `codex` | `auto` (default) prefers web and falls back to codex only when the browser is unavailable/not-logged-in; `web` forces the logged-in-browser path (spares Codex-usage); `codex` forces the headless path (bills Codex-usage). Also settable via `CHATGPT_IMAGEGEN_BACKEND`. |
 | `--profile auto` \| `relay` \| `NAME` | (web) Which Chrome profile to drive. `auto` (default): use the open Chrome if it's logged in, else auto-switch to a profile that is (detected offline from the cookie DB, read-only). `relay`: only the open Chrome. `"Profile 3"`: that profile. Note: *logged in* ≠ *able to generate* — a free-tier account can still hit its daily image cap. |
 | `--session NAME` | (web) Reuse a named Chrome tab group across runs instead of `imagegen-<pid>`. |
+| `--project NAME` | (web) ChatGPT Project to file the run's conversation under — matched by exact name, **created automatically if absent**, reused if present. Default `imagegen` (or `CHATGPT_IMAGEGEN_PROJECT`). Pass `--project ""` for a plain top-level chat. If the project step fails, the run warns and continues in a plain chat — it never blocks generation. |
 | `--keep-tab` | (web) Leave the ChatGPT tab open after generating (default closes it). Useful for debugging. |
 | `-o PATH` | Always use when you know where the file should go in the repo. |
 | `--size 1024x1024` | Square icons / logos (verified) |
@@ -135,12 +145,14 @@ The script prints **just the saved path on stdout** in every mode; the readable 
 | `no image returned. events seen: ...` | Model decided not to call the tool | Rephrase prompt to explicitly say "Use the image_generation tool to render…" |
 | `HTTP 429` | Subscription rate-limited | Wait a few minutes; do not retry in a loop |
 | `warning: --format=X but FILE.Y has .Y extension` | `-o` extension disagrees with `--format` | Fix the path or the format flag; the file IS written with the format you specified |
+| `warning: project 'X' unavailable (…); using a plain chat` | (web) Project list/create API hiccup, or the project page's composer didn't render | Nothing — the image still generated, just in a top-level chat. If it recurs, check the name or pass `--project ""` |
 
 ## Internals (for maintainers / debugging)
 
 **web backend (`run_web`)**
-- Shells out to `agent-browser` against a session-named Chrome tab group.
+- Shells out to `chrome-use` against a session-named Chrome tab group.
 - Opens a *regular* `https://chatgpt.com/` chat (Temporary Chat disables the image tool).
+- Resolves the target ChatGPT Project from inside the authenticated page (undocumented endpoints, probed live): `GET /backend-api/gizmos/snorlax/sidebar` lists projects (a project is a gizmo with id `g-p-…`); `POST /backend-api/projects {name, instructions}` creates one. It then navigates to `https://chatgpt.com/g/<g-p-id>/project` and submits from that composer, which files the conversation inside the project. Any failure degrades to a plain chat with a stderr warning.
 - Submits via `keyboard type` + Enter — **not** `fill`: the composer is a ProseMirror/React contenteditable, and `fill` mutates the DOM without firing the input events React needs, so the send button stays bound to empty state. A send-button click is the fallback.
 - Polls page state via `eval`: waits until the streaming/stop control is gone AND a brand-new `<img>` (src matching `estuary/content|files/download|oaiusercontent`) is present and stable across two reads.
 - Downloads the bytes with an in-page `fetch(src, {credentials:'include'})` → base64, so the browser's own session cookies authorize the signed asset URL. No tokens leave the browser.

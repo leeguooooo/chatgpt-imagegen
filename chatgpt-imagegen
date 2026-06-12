@@ -4,10 +4,12 @@
 Two backends produce the same kind of bitmap, but bill different buckets:
 
   * web (default): drives your already-logged-in ChatGPT browser via
-    `agent-browser`, generating on the ChatGPT *conversation* surface. The real
+    `chrome-use`, generating on the ChatGPT *conversation* surface. The real
     browser clears Cloudflare + the sentinel proof-of-work a headless client
     cannot replicate. This does NOT consume the metered Codex-usage limit —
     it's the same surface as typing in the app. Needs a logged-in browser open.
+    Conversations are grouped into a ChatGPT Project (default "imagegen",
+    created on first use) so they don't litter the chat history.
 
   * codex: a headless POST to `chatgpt.com/backend-api/codex/responses` with the
     `image_generation` tool, reusing the OAuth token from `~/.codex/auth.json`
@@ -20,9 +22,9 @@ Usage:
     chatgpt-imagegen "hero banner" -o web/hero.png --backend codex
 
 Setup (one-time):
-    web backend:   install agent-browser-stealth (provides the `agent-browser`
-                   command) and connect its extension to your logged-in Chrome;
-                   be signed in to chatgpt.com in that browser.
+    web backend:   install chrome-use (formerly agent-browser-stealth) and
+                   connect its extension to your logged-in Chrome; be signed
+                   in to chatgpt.com in that browser.
     codex backend: `npm i -g @openai/codex` and run `codex login`.
 
 Project: https://github.com/leeguooooo/chatgpt-imagegen
@@ -46,7 +48,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
@@ -66,19 +68,25 @@ FALLBACK_UA = f"codex_cli_rs/{FALLBACK_VERSION} (Mac OS 26.0.1; arm64) chatgpt-i
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 VERSION_PATH = Path.home() / ".codex" / "version.json"
 
-# Web backend: drive the real, logged-in ChatGPT browser via agent-browser-stealth
-# so image generation runs on the ChatGPT *conversation* surface (the cheap bucket)
-# rather than the codex/responses surface (the metered Codex-usage bucket). The
-# stealth fork's real-Chrome connect clears Cloudflare + the sentinel proof-of-work
-# that a plain/headless client cannot replicate. See README "Backends".
-# The stealth package ships one binary exposed under three command names — accept
-# whichever is on PATH (on a typical install the latter two symlink to the first).
-AB_BIN_CANDIDATES = ("agent-browser", "agent-browser-stealth", "abs")
+# Web backend: drive the real, logged-in ChatGPT browser via chrome-use
+# (formerly agent-browser-stealth) so image generation runs on the ChatGPT
+# *conversation* surface (the cheap bucket) rather than the codex/responses
+# surface (the metered Codex-usage bucket). The real-Chrome connect clears
+# Cloudflare + the sentinel proof-of-work that a plain/headless client cannot
+# replicate. See README "Backends".
+# Newer installs ship a single `chrome-use` binary; older installs exposed the
+# same binary as agent-browser / agent-browser-stealth / abs — accept whichever
+# is on PATH, newest name first.
+AB_BIN_CANDIDATES = ("chrome-use", "agent-browser", "agent-browser-stealth", "abs")
 # A *regular* new chat — NOT a temporary chat. Temporary Chat disables the
 # image_generation tool ("I can't generate images in this temporary chat"),
 # so we must use a normal conversation. Trade-off: each run leaves a chat in
-# history. Pass --keep-tab to inspect it; delete from the UI if you want.
+# history — mitigated by grouping runs into a ChatGPT Project (--project).
 WEB_NEW_CHAT_URL = "https://chatgpt.com/"
+# A chat started from a Project's page lands inside that Project.
+WEB_PROJECT_URL = "https://chatgpt.com/g/{gizmo_id}/project"
+# Default ChatGPT Project that web-backend conversations are filed under.
+DEFAULT_PROJECT = "imagegen"
 # Image assets render as <img> whose src points at one of these backend paths.
 WEB_IMG_SRC_RE = r"estuary/content|files/download|oaiusercontent"
 
@@ -94,7 +102,7 @@ class GatewayError(RuntimeError):
 
 
 class WebUnavailable(GatewayError):
-    """The web backend can't run at all (agent-browser missing, browser not
+    """The web backend can't run at all (chrome-use missing, browser not
     reachable, or chatgpt.com not logged in) — as opposed to a failure that
     happens *after* a prompt was successfully submitted.
 
@@ -489,13 +497,13 @@ def _post_for_image(
 _AB_INSTALL_HINT = (
     "install it (no npm, no token):\n"
     "  curl -fsSL https://raw.githubusercontent.com/leeguooooo/"
-    "agent-browser-stealth/main/install.sh | sh\n"
-    "then connect it to your logged-in Chrome (see the agent-browser skill)"
+    "chrome-use/main/install.sh | sh\n"
+    "then connect it to your logged-in Chrome (see the chrome-use skill)"
 )
 
 
 def _find_agent_browser() -> str | None:
-    """Return the agent-browser binary path, or None if it isn't installed."""
+    """Return the chrome-use binary path, or None if it isn't installed."""
     for name in AB_BIN_CANDIDATES:
         path = shutil.which(name)
         if path:
@@ -573,9 +581,9 @@ def _detect_logged_in_profiles() -> list[str]:
 
 
 def _ab(ab: str, *ab_args: str, session: str, timeout: float, profile: str | None = None) -> str:
-    """Run one agent-browser subcommand, return stdout. Raises GatewayError on failure.
+    """Run one chrome-use subcommand, return stdout. Raises GatewayError on failure.
 
-    ``profile`` (a Chrome profile name/path) is passed as agent-browser's global
+    ``profile`` (a Chrome profile name/path) is passed as chrome-use's global
     ``--profile`` flag, which must precede the subcommand. Only the launching
     ``open`` call needs it; later calls reuse the session's browser.
     """
@@ -588,13 +596,13 @@ def _ab(ab: str, *ab_args: str, session: str, timeout: float, profile: str | Non
             cmd, capture_output=True, text=True, timeout=max(5.0, timeout)
         )
     except subprocess.TimeoutExpired:
-        raise GatewayError(f"agent-browser timed out: {' '.join(ab_args[:2])}") from None
+        raise GatewayError(f"chrome-use timed out: {' '.join(ab_args[:2])}") from None
     except FileNotFoundError:
-        raise GatewayError("agent-browser binary vanished mid-run") from None
+        raise GatewayError("chrome-use binary vanished mid-run") from None
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
         raise GatewayError(
-            f"agent-browser {ab_args[0] if ab_args else ''} failed "
+            f"chrome-use {ab_args[0] if ab_args else ''} failed "
             f"(exit {proc.returncode}): {' / '.join(tail)[:300]}"
         )
     return proc.stdout
@@ -603,7 +611,7 @@ def _ab(ab: str, *ab_args: str, session: str, timeout: float, profile: str | Non
 def _ab_eval(ab: str, js: str, session: str, timeout: float) -> Any:
     """Run JS in the page and decode the value it returns.
 
-    Convention: the JS always `return JSON.stringify(value)`. agent-browser
+    Convention: the JS always `return JSON.stringify(value)`. chrome-use
     prints that string JSON-encoded, so we decode twice — once to recover the
     JSON text the page returned, once to parse it into a Python object.
     """
@@ -620,7 +628,7 @@ def _ab_eval(ab: str, js: str, session: str, timeout: float) -> Any:
             except Exception:
                 return inner
         return inner
-    raise GatewayError(f"could not parse agent-browser eval output: {out[:200]!r}")
+    raise GatewayError(f"could not parse chrome-use eval output: {out[:200]!r}")
 
 
 # JS: snapshot the generation state — whether a stop/streaming control is still
@@ -666,6 +674,94 @@ _JS_FETCH = r"""(async () => {
   } catch (e) { return JSON.stringify({ok: false, error: String(e)}); }
 })()"""
 
+# JS: resolve a ChatGPT Project (a "snorlax" gizmo, id g-p-…) by exact display
+# name, creating it if absent. Runs inside the authenticated page so the
+# session cookies + accessToken are free. Endpoints (probed live, undocumented):
+#   GET  /backend-api/gizmos/snorlax/sidebar   → list projects
+#   POST /backend-api/projects {name, instructions} → create one
+_JS_ENSURE_PROJECT = r"""(async () => {
+  try {
+    const name = %s;
+    const sess = await fetch('/api/auth/session', {credentials: 'include'})
+      .then(r => r.json()).catch(() => null);
+    if (!sess || !sess.accessToken)
+      return JSON.stringify({ok: false, error: 'no accessToken in /api/auth/session'});
+    const h = {Authorization: 'Bearer ' + sess.accessToken,
+               'Content-Type': 'application/json'};
+    const find = async () => {
+      const r = await fetch(
+        '/backend-api/gizmos/snorlax/sidebar?conversations_per_gizmo=0',
+        {credentials: 'include', headers: h});
+      if (!r.ok) throw new Error('project list HTTP ' + r.status);
+      for (const it of (await r.json()).items || []) {
+        const g = it.gizmo && it.gizmo.gizmo;
+        if (g && g.display && g.display.name === name) return g.id;
+      }
+      return null;
+    };
+    let id = await find();
+    if (id) return JSON.stringify({ok: true, id, created: false});
+    const mk = await fetch('/backend-api/projects', {
+      method: 'POST', credentials: 'include', headers: h,
+      body: JSON.stringify({name: name, instructions: ''})});
+    if (!mk.ok) return JSON.stringify({ok: false, error: 'project create HTTP ' + mk.status});
+    const j = await mk.json().catch(() => null);
+    id = j && ((j.gizmo && (j.gizmo.id || (j.gizmo.gizmo && j.gizmo.gizmo.id))) || j.id);
+    if (!id) id = await find();  // response shape unknown-proof: re-list by name
+    if (!id) return JSON.stringify({ok: false, error: 'created but could not resolve id'});
+    return JSON.stringify({ok: true, id, created: true});
+  } catch (e) { return JSON.stringify({ok: false, error: String(e)}); }
+})()"""
+
+
+def _wait_composer(ab: str, session: str, remaining, tries: int = 15) -> bool:
+    """Poll until the chat composer (#prompt-textarea) is on the page."""
+    for _ in range(tries):
+        try:
+            if _ab_eval(
+                ab, "(() => JSON.stringify(!!document.querySelector('#prompt-textarea')))()",
+                session=session, timeout=min(20.0, remaining()),
+            ):
+                return True
+        except GatewayError:
+            pass
+        time.sleep(1.0)
+    return False
+
+
+def _enter_project(ab: str, session: str, name: str, remaining, emit) -> None:
+    """Navigate the open session into the named ChatGPT Project, creating the
+    project on first use — so each run's conversation files under the project
+    instead of littering the top-level chat history.
+
+    Best-effort: organization is a nicety, the generation is the point. On any
+    failure this warns and restores a plain new chat, never aborts the run.
+    """
+    navigated = False
+    try:
+        res = _ab_eval(ab, _JS_ENSURE_PROJECT % json.dumps(name),
+                       session=session, timeout=min(30.0, remaining()))
+        if not isinstance(res, dict) or not res.get("ok") or not res.get("id"):
+            detail = res.get("error") if isinstance(res, dict) else res
+            raise GatewayError(f"could not resolve project: {detail}")
+        emit(f"using project {name!r}" + (" (created)" if res.get("created") else ""))
+        navigated = True
+        _ab(ab, "open", WEB_PROJECT_URL.format(gizmo_id=res["id"]),
+            session=session, timeout=min(30.0, remaining()))
+        if not _wait_composer(ab, session, remaining):
+            raise GatewayError("project page composer never appeared")
+    except GatewayError as e:
+        emit(f"warning: project {name!r} unavailable ({e}); using a plain chat")
+        if navigated:
+            # We may have left the plain-chat page; restore it so the normal
+            # submit flow still has a composer to type into.
+            try:
+                _ab(ab, "open", WEB_NEW_CHAT_URL, session=session,
+                    timeout=min(30.0, remaining()))
+                _wait_composer(ab, session, remaining)
+            except GatewayError:
+                pass
+
 
 def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[bytes, JsonDict]:
     """Generate an image by driving the user's logged-in ChatGPT browser.
@@ -674,7 +770,7 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     """
     ab = _find_agent_browser()
     if ab is None:
-        raise WebUnavailable(f"`agent-browser` is not installed — {_AB_INSTALL_HINT}")
+        raise WebUnavailable(f"`chrome-use` is not installed — {_AB_INSTALL_HINT}")
     session = args.session or f"imagegen-{os.getpid()}"
     deadline = start + args.timeout
     user_text = _build_user_text(args.prompt, args.size, args.format)
@@ -709,17 +805,7 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
                 timeout=min(30.0, remaining()), profile=prof)
         except GatewayError:
             return False
-        for _ in range(15):
-            try:
-                if _ab_eval(
-                    ab, "(() => JSON.stringify(!!document.querySelector('#prompt-textarea')))()",
-                    session=session, timeout=min(20.0, remaining()),
-                ):
-                    return True
-            except GatewayError:
-                pass
-            time.sleep(1.0)
-        return False
+        return _wait_composer(ab, session, remaining)
 
     def _close() -> None:
         """Close the session's browser/tab. Best-effort; never raises."""
@@ -749,6 +835,9 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     # ALWAYS closed on the way out — success, failure (quota/refusal/timeout), or
     # exception — instead of leaking a window on every non-happy path.
     try:
+        project = (args.project or "").strip()
+        if project:
+            _enter_project(ab, session, project, remaining, emit)
         return _generate_in_browser(
             ab, session, user_text, args, deadline, remaining, emit)
     finally:
@@ -977,7 +1066,7 @@ def _dispatch(
     """Pick a backend and run it.
 
     auto  : prefer web (spares Codex-usage); fall back to codex only when the
-            web backend is *unavailable* (no agent-browser / browser not
+            web backend is *unavailable* (no chrome-use / browser not
             reachable / not logged in). A web failure that happens after the
             prompt was submitted is NOT silently retried on codex — that would
             spend the very bucket auto-mode is trying to protect.
@@ -1002,8 +1091,18 @@ def _dispatch(
         return run_web(args, progress, start)
     except WebUnavailable as e:
         if _codex_token_present():
-            note(f"web backend unavailable ({e}); falling back to codex "
-                 f"(this consumes Codex-usage).")
+            if _find_agent_browser() is None:
+                # chrome-use isn't installed. Keep this to a *gentle* one-line
+                # tip — never dump install commands here, and never install on
+                # the user's behalf. Full setup guidance lives in the README /
+                # skill and is for when the user explicitly opts in.
+                note("chrome-use not installed; falling back to codex "
+                     "(bills the metered Codex-usage bucket).")
+                note("tip: with chrome-use installed, generation runs through "
+                     "your logged-in browser and costs no Codex usage.")
+            else:
+                note(f"web backend unavailable ({e}); falling back to codex "
+                     f"(this consumes Codex-usage).")
             return run_codex(args, progress, stall_timeout, start)
         sys.exit(
             "cannot generate an image — neither backend is ready:\n"
@@ -1048,15 +1147,23 @@ def main() -> int:
         default=os.environ.get("CHATGPT_IMAGEGEN_BACKEND", "auto"),
         help="auto (default): prefer web (spares Codex-usage limits); fall back "
              "to codex only if the browser isn't available/logged in. "
-             "web: force the logged-in-browser path (agent-browser). "
+             "web: force the logged-in-browser path (chrome-use). "
              "codex: force the headless codex/responses path (bills Codex-usage). "
              "Also settable via CHATGPT_IMAGEGEN_BACKEND.",
     )
     parser.add_argument(
         "--session",
         default=None,
-        help="(web backend) agent-browser session name to reuse a Chrome tab "
+        help="(web backend) chrome-use session name to reuse a Chrome tab "
              "group across runs (default: imagegen-<pid>).",
+    )
+    parser.add_argument(
+        "--project",
+        default=os.environ.get("CHATGPT_IMAGEGEN_PROJECT", DEFAULT_PROJECT),
+        help="(web backend) ChatGPT Project to file the conversation under — "
+             f"found by exact name, created if absent (default: {DEFAULT_PROJECT!r}; "
+             "also settable via CHATGPT_IMAGEGEN_PROJECT). Pass an empty string "
+             "to use a plain top-level chat instead.",
     )
     parser.add_argument(
         "--profile",
