@@ -112,7 +112,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | 后端静默多少秒判定为**卡死**(早于总预算触发)。会被钳制到 `--timeout`。 |
 | `--quiet` | 关 | stdout **只**打印保存路径(适合 agent 管道)。进度仍走 stderr —— 用 `--no-progress` 静音。 |
 | `--no-progress` | 关 | 关掉 stderr 的进度时间线(错误仍打印)。 |
-| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.6.0`)后退出。 |
+| `-V`, `--version` | — | 打印 CLI 版本(`chatgpt-imagegen 0.7.0`)后退出。 |
 
 示例:
 
@@ -153,7 +153,14 @@ echo "saved to $OUT"
 
 ## 并发
 
-**仅限 `codex` 后端。** ChatGPT 订阅后端能正常处理并发的 `image_generation` 调用。在 Plus 账号上实测:**4 个并发请求全部 200**,总墙钟 ≈ 最慢的那一个(约 27 秒),无串行、无 429。
+两个后端各有独立的跨进程并发上限,因为它们撞的限制不一样:
+
+| 后端 | 默认上限 | 原因 | 调整 |
+| --- | --- | --- | --- |
+| `web` | **1**(串行) | 驱动同一个登录的 Chrome,**而且** chatgpt.com 页面侧限流很凶("Too many requests… temporarily limited access to your conversations")。 | `CHATGPT_IMAGEGEN_WEB_CONCURRENCY` |
+| `codex` | **4** | 独立 HTTP POST;Plus 账号实测 4 并发无 429、总墙钟 ≈ 最慢单张。设上限是防止 agent 大批量 fan-out 触发账号级限流。 | `CHATGPT_IMAGEGEN_CODEX_CONCURRENCY`(`0` = 不限) |
+
+超过上限多 fire 是**安全**的——多出来的进程在 flock 槽位池上排队(等待者打印 "waiting…",且 `--timeout` 预算从拿到槽位才开始计,排队时间不吃预算)。
 
 ```bash
 # 从 shell 并发跑 4 个(注意 --backend codex):
@@ -164,7 +171,7 @@ done
 wait
 ```
 
-**`web` 后端自动串行**:它驱动同一个登录的 Chrome,并发会互相串图(抓到别的 run 刚生成的 `<img>`)——见 [#7](https://github.com/leeguooooo/chatgpt-imagegen/issues/7)。从 v0.6.0 起,web 运行会拿一把跨进程锁**自动排队**,所以一次并发 fire 多个 `--backend web` 是**安全**的——只是会一张一张跑(等待者会打印 "waiting…")。真正的并行 web 取决于 chrome-use 隔离并发 session([chrome-use#12](https://github.com/leeguooooo/chrome-use/issues/12));要并行现在请用 `--backend codex`。
+web 为什么钉在 1:共享 Chrome 上并发曾互相串图([#7](https://github.com/leeguooooo/chatgpt-imagegen/issues/7),v0.6.0 已修),且页面侧本来就压快速突发。如果 chatgpt.com 真把账号限流了,web 后端会识别 "Too many requests" 弹窗并**立刻明确报错**——提交前撞到则 `auto` 模式降级 codex;已提交则干净停下,绝不重复花钱。
 
 注意:订阅额度和 ChatGPT 网页 app、Codex CLI **共享**。别持续狂跑(>10 张/分钟)—— 早晚会撞每日限流。批量需求请用官方 `/v1/images/generations` API + `OPENAI_API_KEY`。
 

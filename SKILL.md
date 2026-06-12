@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.6.0"
+version: "0.7.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system."
 ---
 
@@ -128,7 +128,7 @@ The script prints **just the saved path on stdout** in every mode; the readable 
 - **Image quality** is chosen by the backend; this skill has no `--quality` flag, and the subscription path does not honour explicit quality requests reliably. Don't promise a specific quality level to the user. If they need explicit `quality=high`, route them to the official `/v1/images/generations` API with their own `OPENAI_API_KEY`.
 - `background: transparent` is **not supported** on the subscription path.
 - A single image typically takes **15–60 s**, but large or detailed ones occasionally run **2–3 min**. The default `--timeout` is 300 s to cover this; a genuine hang is caught sooner by the `--stall-timeout` idle window (default 120 s).
-- **Parallel execution: `codex` backend only** — the codex backend handles ≥4 concurrent requests with no serialization or 429s on a Plus account; fire with explicit `--backend codex` plus shell `&` + `wait`. The **`web` backend self-serializes** (since 0.6.0): concurrent web runs take a cross-process lock and queue one at a time (waiters print "waiting…"), so firing several at once is safe but not faster than sequential. Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
+- **Per-backend concurrency caps** (cross-process, flock slot pool; excess runs queue safely, waiters print "waiting…", and `--timeout` starts only once a slot is acquired): `web` = **1** (the page surface rate-limits aggressively — "Too many requests"; also one shared Chrome), `codex` = **4** (measured safe on Plus, capped so big fan-outs can't trip the account limiter). Override via `CHATGPT_IMAGEGEN_WEB_CONCURRENCY` / `CHATGPT_IMAGEGEN_CODEX_CONCURRENCY` (`0` = unlimited). For parallel batches use `--backend codex` + shell `&` + `wait`; firing parallel `web` runs is safe but executes one at a time. Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
 - Subscription quota is **shared** with the user's interactive ChatGPT use. Don't bulk-generate (>10 images / minute sustained) without permission — you'll hit per-day caps.
 
 ## Error handling
@@ -146,6 +146,8 @@ The script prints **just the saved path on stdout** in every mode; the readable 
 | `HTTP 429` | Subscription rate-limited | Wait a few minutes; do not retry in a loop |
 | `warning: --format=X but FILE.Y has .Y extension` | `-o` extension disagrees with `--format` | Fix the path or the format flag; the file IS written with the format you specified |
 | `warning: project 'X' unavailable (…); using a plain chat` | (web) Project list/create API hiccup, or the project page's composer didn't render | Nothing — the image still generated, just in a top-level chat. If it recurs, check the name or pass `--project ""` |
+| `chatgpt.com rate-limited this account ('Too many requests') …` | (web) The page surface temporarily blocked the account for making requests too quickly | Wait a few minutes. If it fired *before* submit, `auto` mode already fell back to codex; if *after* submit, check the conversation later — the image may still appear there. Don't retry in a loop |
+| `waiting for a free web/codex slot (max N concurrent …)` | More parallel runs than the backend's concurrency cap | Nothing — the run starts when a slot frees up; queue time doesn't eat `--timeout` |
 
 ## Internals (for maintainers / debugging)
 

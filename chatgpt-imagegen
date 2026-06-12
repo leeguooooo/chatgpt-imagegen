@@ -50,7 +50,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
@@ -111,6 +111,16 @@ class WebUnavailable(GatewayError):
     Auto-routing treats this as "fall back to codex"; a failure after submit is
     a plain GatewayError and must NOT silently fall back (that would burn the
     Codex-usage bucket the web backend exists to spare)."""
+
+
+class WebRateLimited(WebUnavailable):
+    """chatgpt.com showed its "Too many requests" dialog before we submitted
+    anything — the page surface has temporarily rate-limited this account.
+
+    Subclasses WebUnavailable on purpose: nothing was submitted/billed yet, so
+    auto mode may safely fall back to codex (a different limiter). Retrying
+    other Chrome profiles is pointless when they hold the same account, and
+    each costs ~45s — so this aborts the candidate loop instead."""
 
 
 # ---------- auth ----------
@@ -657,8 +667,11 @@ _JS_STATE = r"""(() => {
     .filter(s => re.test(s) && !seen.has(s));
   const a = document.querySelectorAll('[data-message-author-role="assistant"]');
   const lastA = a[a.length - 1];
+  const dlg = [...document.querySelectorAll('[role="dialog"]')]
+    .map(d => d.textContent || '').join(' ');
   return JSON.stringify({stop, last: fresh[fresh.length - 1] || null,
                          assistant: a.length > 0,
+                         limited: /too many requests|requests too quickly/i.test(dlg),
                          atext: lastA ? lastA.textContent.trim().slice(0, 240) : ""});
 })()"""
 
@@ -726,15 +739,42 @@ _JS_ENSURE_PROJECT = r"""(async () => {
 })()"""
 
 
+# JS: is the composer up — and is chatgpt.com showing its rate-limit dialog?
+# ("Too many requests — You're making requests too quickly. We've temporarily
+# limited access to your conversations…"). The dialog means every further page
+# action is pointless for a few minutes, so surface it instead of timing out.
+_JS_COMPOSER = r"""(() => {
+  const dlg = [...document.querySelectorAll('[role="dialog"]')]
+    .map(d => d.textContent || '').join(' ');
+  return JSON.stringify({
+    composer: !!document.querySelector('#prompt-textarea'),
+    limited: /too many requests|requests too quickly/i.test(dlg),
+  });
+})()"""
+
+_RATE_LIMIT_MSG = (
+    "chatgpt.com rate-limited this account ('Too many requests') — the page "
+    "surface needs a few minutes of quiet before it will serve again."
+)
+
+
 def _wait_composer(ab: str, session: str, remaining, tries: int = 15) -> bool:
-    """Poll until the chat composer (#prompt-textarea) is on the page."""
+    """Poll until the chat composer (#prompt-textarea) is on the page.
+
+    Raises WebRateLimited if the page shows the "Too many requests" dialog —
+    waiting out the poll budget (and then other profile candidates) would just
+    burn ~45s each on an account-level block."""
     for _ in range(tries):
         try:
-            if _ab_eval(
-                ab, "(() => JSON.stringify(!!document.querySelector('#prompt-textarea')))()",
-                session=session, timeout=min(20.0, remaining()),
-            ):
-                return True
+            st = _ab_eval(ab, _JS_COMPOSER, session=session,
+                          timeout=min(20.0, remaining()))
+            if isinstance(st, dict):
+                if st.get("limited"):
+                    raise WebRateLimited(_RATE_LIMIT_MSG)
+                if st.get("composer"):
+                    return True
+        except WebRateLimited:
+            raise
         except GatewayError:
             pass
         time.sleep(1.0)
@@ -762,6 +802,8 @@ def _enter_project(ab: str, session: str, name: str, remaining, emit) -> None:
             session=session, timeout=min(30.0, remaining()))
         if not _wait_composer(ab, session, remaining):
             raise GatewayError("project page composer never appeared")
+    except WebRateLimited:
+        raise  # account-level block; a plain chat would be just as dead
     except GatewayError as e:
         emit(f"warning: project {name!r} unavailable ({e}); using a plain chat")
         if navigated:
@@ -775,42 +817,74 @@ def _enter_project(ab: str, session: str, name: str, remaining, emit) -> None:
                 pass
 
 
-@contextmanager
-def _web_serialize_lock(progress: bool, start: float) -> "Iterator[None]":
-    """Serialize web-backend runs across processes (issue #7).
+def _backend_limit(kind: str, default: int) -> int:
+    """Concurrency cap for a backend, via CHATGPT_IMAGEGEN_<KIND>_CONCURRENCY.
 
-    Every web run drives the ONE shared, logged-in Chrome through chrome-use.
-    Running several at once makes them cross-contaminate each other's images — a
-    fresh ``<img>`` produced by a sibling run gets picked up and downloaded into
-    the wrong file (observed: swapped images, byte-identical outputs). Until
-    chrome-use isolates concurrent sessions (leeguooooo/chrome-use#12),
-    fire-and-forget parallel web calls are made *safe* here: each queues behind
-    the previous instead of corrupting. The codex backend is independent HTTP
-    and is intentionally NOT locked. The ``flock`` auto-releases if the holder
-    dies, so a crash can't wedge the queue.
+    0 or a negative value means unlimited. Unset / unparsable → the default.
     """
-    path = os.path.join(tempfile.gettempdir(), "chatgpt-imagegen-web.lock")
-    f = open(path, "w")
+    raw = os.environ.get(f"CHATGPT_IMAGEGEN_{kind.upper()}_CONCURRENCY", "").strip()
     try:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            if progress:
-                print(
-                    f"[{time.monotonic() - start:6.1f}s] waiting for another web "
-                    "generation to finish (web runs are serialized; see chrome-use#12)",
-                    file=sys.stderr,
-                )
-            fcntl.flock(f, fcntl.LOCK_EX)  # block until the holder releases
-        try:
-            yield
-        finally:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+# Per-backend defaults. They differ because the backends hit different limits:
+#   web   — drives the ONE shared logged-in Chrome AND the chatgpt.com page
+#           surface, which rate-limits aggressively ("Too many requests …
+#           temporarily limited access to your conversations"). Keep it at 1.
+#   codex — independent HTTP POSTs; measured fine at 4 concurrent on a Plus
+#           account (no 429s, no serialization). Cap it anyway so an agent
+#           fanning out a big batch can't trip the per-account limiter.
+WEB_CONCURRENCY_DEFAULT = 1
+CODEX_CONCURRENCY_DEFAULT = 4
+
+
+@contextmanager
+def _concurrency_slot(kind: str, limit: int, progress: bool, start: float) -> "Iterator[None]":
+    """Cross-process counting semaphore: at most ``limit`` concurrent runs.
+
+    Implemented as ``limit`` flock slot files in the temp dir — a run holds
+    exactly one slot for its whole generation. Excess runs queue (0.5s poll)
+    instead of failing or corrupting each other (issue #7: parallel web runs
+    cross-contaminated images; the page surface also rate-limits hard). The
+    kernel releases a slot when its holder dies, so a crash can't wedge the
+    queue. ``limit <= 0`` disables the gate entirely.
+    """
+    if limit <= 0:
+        yield
+        return
+    base = tempfile.gettempdir()
+    slot = None
+    announced = False
+    try:
+        while slot is None:
+            for i in range(limit):
+                f = open(os.path.join(base, f"chatgpt-imagegen-{kind}-{i}.lock"), "w")
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    slot = f
+                    break
+                except OSError:
+                    f.close()
+            else:
+                if progress and not announced:
+                    announced = True
+                    print(
+                        f"[{time.monotonic() - start:6.1f}s] waiting for a free "
+                        f"{kind} slot (max {limit} concurrent {kind} generation"
+                        f"{'s' if limit != 1 else ''})",
+                        file=sys.stderr,
+                    )
+                time.sleep(0.5)
+        yield
+    finally:
+        if slot is not None:
             try:
-                fcntl.flock(f, fcntl.LOCK_UN)
+                fcntl.flock(slot, fcntl.LOCK_UN)
             except OSError:
                 pass
-    finally:
-        f.close()
+            slot.close()
 
 
 def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[bytes, JsonDict]:
@@ -872,10 +946,14 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     for prof in candidates:
         label = "current Chrome (relay)" if prof is None else f"profile {prof!r}"
         emit(f"opening ChatGPT via {label}")
-        if _try_open(prof):
-            chosen, opened = prof, True
-            emit(f"using {label}")
-            break
+        try:
+            if _try_open(prof):
+                chosen, opened = prof, True
+                emit(f"using {label}")
+                break
+        except WebRateLimited:
+            _close()  # account-level block: stop burning 45s per candidate
+            raise
         _close()  # always tear down a failed attempt, including the last
     if not opened:
         raise WebUnavailable(
@@ -952,6 +1030,14 @@ def _generate_in_browser(ab, session, user_text, args, deadline, remaining, emit
             continue
         if not isinstance(st, dict):
             continue
+        if st.get("limited"):
+            # Post-submit rate limit: a plain GatewayError on purpose — the
+            # prompt already went in, so auto mode must NOT double-spend by
+            # silently retrying on codex.
+            raise GatewayError(
+                _RATE_LIMIT_MSG + " The prompt was already submitted; check "
+                "the conversation later or retry in a few minutes."
+            )
         if st.get("stop"):
             if last_phase != "generating":
                 last_phase = "generating"
@@ -1051,6 +1137,11 @@ def run_codex(
 
     Fast and dependency-free, but every call bills the metered Codex-usage
     bucket. Returns (image_bytes, meta); exits on unrecoverable failure.
+
+    Concurrency is gated at CODEX_CONCURRENCY_DEFAULT (4) parallel runs by a
+    cross-process semaphore — wide enough for real fan-out, tight enough that a
+    big agent batch can't trip the per-account limiter. Tune (or disable with
+    0) via CHATGPT_IMAGEGEN_CODEX_CONCURRENCY.
     """
     auth = _load_auth()
     access, account_id, refresh = _extract_access_token(auth)
@@ -1064,7 +1155,21 @@ def run_codex(
 
     version = _detect_codex_version()
     payload = _build_payload(args.prompt, args.size, args.format, args.model)
-    deadline = start + args.timeout
+
+    with _concurrency_slot("codex", _backend_limit("codex", CODEX_CONCURRENCY_DEFAULT),
+                           progress, start):
+        return _run_codex_locked(
+            args, progress, stall_timeout, start, payload, account_id, access,
+            refresh, version, auth)
+
+
+def _run_codex_locked(
+    args, progress, stall_timeout, start, payload, account_id, access,
+    refresh, version, auth,
+) -> tuple[bytes, JsonDict]:
+    # Budget from NOW, not process start: the run may have queued on the codex
+    # concurrency slot, and that wait must not eat the --timeout image budget.
+    deadline = time.monotonic() + args.timeout
 
     def _attempt(token: str) -> tuple[bytes, JsonDict]:
         headers = _build_headers(token, account_id, version)
@@ -1133,16 +1238,18 @@ def _dispatch(
     if args.backend == "codex":
         return run_codex(args, progress, stall_timeout, start)
 
+    web_limit = _backend_limit("web", WEB_CONCURRENCY_DEFAULT)
+
     if args.backend == "web":
         try:
-            with _web_serialize_lock(progress, start):
+            with _concurrency_slot("web", web_limit, progress, start):
                 return run_web(args, progress, start)
         except GatewayError as e:
             sys.exit(str(e))
 
     # auto
     try:
-        with _web_serialize_lock(progress, start):
+        with _concurrency_slot("web", web_limit, progress, start):
             return run_web(args, progress, start)
     except WebUnavailable as e:
         if _codex_token_present():

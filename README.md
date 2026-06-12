@@ -114,7 +114,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.6.0`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.7.0`) and exit. |
 
 Examples:
 
@@ -155,7 +155,14 @@ Real output of the exact example commands above — every image in this README i
 
 ## Concurrency
 
-**`codex` backend only.** The ChatGPT subscription backend handles concurrent `image_generation` calls fine — measured on a Plus account, **4 simultaneous requests all returned 200**, total wall time ≈ slowest single (~27s), no serialization, no 429s.
+Each backend has its own cross-process concurrency cap, because they hit different limits:
+
+| Backend | Default cap | Why | Override |
+| --- | --- | --- | --- |
+| `web` | **1** (serialized) | Drives the one shared logged-in Chrome, **and** the chatgpt.com page surface rate-limits aggressively ("Too many requests… temporarily limited access to your conversations"). | `CHATGPT_IMAGEGEN_WEB_CONCURRENCY` |
+| `codex` | **4** | Independent HTTP POSTs; measured fine at 4 concurrent on a Plus account (no 429s, wall time ≈ slowest single). Capped so a big agent fan-out can't trip the per-account limiter. | `CHATGPT_IMAGEGEN_CODEX_CONCURRENCY` (`0` = unlimited) |
+
+Firing more processes than the cap is **safe** — excess runs queue on a flock slot pool (waiters print a "waiting…" line, and the `--timeout` budget only starts once a slot is acquired, so queue time is free).
 
 ```bash
 # Fire 4 in parallel from a shell (note: --backend codex):
@@ -166,7 +173,7 @@ done
 wait
 ```
 
-The **`web` backend self-serializes**: it drives the one shared logged-in Chrome, so concurrent runs would cross-contaminate each other's images (a sibling run's fresh `<img>` gets grabbed) — see [#7](https://github.com/leeguooooo/chatgpt-imagegen/issues/7). Since v0.6.0, web runs take a cross-process lock and **queue automatically**, so firing several `--backend web` at once is *safe* — they just run one at a time (the waiters print a "waiting…" line). True parallel web is blocked on chrome-use isolating concurrent sessions ([chrome-use#12](https://github.com/leeguooooo/chrome-use/issues/12)); for parallelism today use `--backend codex`.
+Why web stays at 1: concurrent runs on the shared Chrome used to cross-contaminate each other's images ([#7](https://github.com/leeguooooo/chatgpt-imagegen/issues/7), fixed in v0.6.0), and the page surface throttles fast bursts regardless. If chatgpt.com does rate-limit the account, the web backend detects the "Too many requests" dialog and **fails fast with a clear message** — before the prompt is submitted `auto` mode falls back to codex; after submission it stops cleanly instead of double-spending.
 
 Caveat: subscription quota is shared with the ChatGPT web app and Codex CLI. Don't run sustained batches (>10 images/min) — you'll eventually hit per-day rate limits. For bulk batches, use the official `/v1/images/generations` API with an `OPENAI_API_KEY`.
 
