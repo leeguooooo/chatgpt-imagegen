@@ -50,9 +50,15 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
+
+# Reference-image (image-to-image / --ref) support. Re-encode a reference under
+# this base64 budget to avoid oversized request bodies; downsizing uses macOS
+# `sips` so the no-pip-deps property is preserved.
+REF_B64_BUDGET = 5 * 1024 * 1024
+REF_MAX_EDGE = 2048
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
 # treated as stalled. The connect timeout urllib applies to urlopen() also
 # governs every subsequent read, so without loosening it a >connect-timeout
@@ -295,32 +301,156 @@ def _build_headers(token: str, account_id: str | None, version: str) -> dict[str
     return headers
 
 
+# ---------- reference-image (img2img) helpers ----------
+
+def _is_url(ref: str) -> bool:
+    return ref.startswith("http://") or ref.startswith("https://")
+
+
+def _sniff_mime(data: bytes) -> str | None:
+    """Best-effort MIME sniff for the image types the backend accepts."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:2] == b"\xff\xd8":
+        return "image/jpeg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _load_reference(ref: str) -> tuple[str, str]:
+    """Return (base64, mime) for a local path or http(s) URL.
+
+    Downloads URLs, then sniffs the MIME. If the base64 would exceed
+    REF_B64_BUDGET, downsizes to a <=REF_MAX_EDGE JPEG via macOS `sips`
+    (keeps the no-pip-deps property). Exits cleanly on any failure.
+    """
+    src_path: str
+    cleanup: str | None = None
+    try:
+        if _is_url(ref):
+            try:
+                req = urllib.request.Request(ref, headers={"User-Agent": FALLBACK_UA})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    raw = r.read()
+            except Exception as e:  # noqa: BLE001
+                sys.exit(f"could not download reference {ref!r}: {e}")
+            fd, tmp = tempfile.mkstemp(suffix=".img")
+            os.close(fd)
+            Path(tmp).write_bytes(raw)
+            src_path, cleanup = tmp, tmp
+        else:
+            p = Path(ref).expanduser()
+            if not p.is_file():
+                sys.exit(f"reference image not found: {ref}")
+            src_path = str(p)
+            raw = p.read_bytes()
+
+        mime = _sniff_mime(raw)
+        if mime is None:
+            sys.exit(f"unsupported reference image type for {ref!r} (need PNG, JPEG, or WEBP)")
+
+        b64 = base64.b64encode(raw).decode("ascii")
+        if len(b64) > REF_B64_BUDGET:
+            shrunk = _downsize_reference(src_path)
+            if shrunk is not None:
+                mime = "image/jpeg"
+                b64 = base64.b64encode(shrunk).decode("ascii")
+        return b64, mime
+    finally:
+        if cleanup:
+            try:
+                os.unlink(cleanup)
+            except OSError:
+                pass
+
+
+def _downsize_reference(src_path: str) -> bytes | None:
+    """Re-encode a too-large reference to a <=REF_MAX_EDGE JPEG via `sips`.
+
+    Returns the JPEG bytes, or None if `sips` is unavailable/failed (caller
+    then sends the original and lets the backend decide).
+    """
+    if shutil.which("sips") is None:
+        return None
+    fd, tmp = tempfile.mkstemp(suffix=".jpg")
+    os.close(fd)
+    try:
+        proc = subprocess.run(
+            ["sips", "-s", "format", "jpeg", "-Z", str(REF_MAX_EDGE),
+             src_path, "--out", tmp],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if proc.returncode != 0:
+            return None
+        return Path(tmp).read_bytes()
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
 # ---------- request ----------
 
-def _build_user_text(prompt: str, size: str, output_format: str) -> str:
+def _build_user_text(
+    prompt: str, size: str, output_format: str, is_edit: bool = False
+) -> str:
     """Natural-language instruction shared by both backends.
 
     The web UI has no explicit size/format knobs, so we fold those hints into
     the prompt exactly the way the codex tool description does — the model
-    reads them and picks the matching aspect ratio.
+    reads them and picks the matching aspect ratio. When `is_edit`, the
+    instruction anchors on the attached reference image so the model edits it
+    faithfully rather than inventing a fresh subject.
     """
-    user_text = (
-        "Use the image_generation tool to render the following. "
-        f"Request: {prompt}. "
-        f"Output format: {output_format}."
-    )
+    if is_edit:
+        user_text = (
+            "Use the image_generation tool to edit the attached reference "
+            "image(s). Treat the reference as the canonical subject — reproduce "
+            "its exact pattern, colours, and texture faithfully; do not redesign "
+            f"or stylise the subject itself. Request: {prompt}. "
+            f"Output format: {output_format}."
+        )
+    else:
+        user_text = (
+            "Use the image_generation tool to render the following. "
+            f"Request: {prompt}. "
+            f"Output format: {output_format}."
+        )
     if size and size != "auto":
         user_text += f" Size: {size}."
     user_text += " Do not include explanatory text — produce only the image."
     return user_text
 
 
-def _build_payload(prompt: str, size: str, output_format: str, model: str) -> JsonDict:
-    user_text = _build_user_text(prompt, size, output_format)
+def _build_payload(
+    prompt: str, size: str, output_format: str, model: str,
+    refs: list[tuple[str, str]] | None = None,
+) -> JsonDict:
+    """Build the codex/responses body. When `refs` (list of (b64, mime)) is
+    given, attach each as an `input_image` content part ahead of the text and
+    force the image tool to fire (`tool_choice: required`) — the img2img path.
+    """
+    is_edit = bool(refs)
+    user_text = _build_user_text(prompt, size, output_format, is_edit=is_edit)
 
     image_tool: JsonDict = {"type": "image_generation", "output_format": output_format}
     if size and size != "auto":
         image_tool["size"] = size
+
+    if refs:
+        content: list[JsonDict] = [
+            {"type": "input_image", "image_url": f"data:{mime};base64,{b64}"}
+            for (b64, mime) in refs
+        ]
+        content.append({"type": "input_text", "text": user_text})
+        tool_choice = "required"
+    else:
+        content = [{"type": "input_text", "text": user_text}]
+        tool_choice = "auto"
 
     # The Codex backend requires `instructions` to match an allowlisted prompt.
     # We use a tiny system-style instruction known to be accepted on gpt-5.5.
@@ -332,11 +462,11 @@ def _build_payload(prompt: str, size: str, output_format: str, model: str) -> Js
             {
                 "type": "message",
                 "role": "user",
-                "content": [{"type": "input_text", "text": user_text}],
+                "content": content,
             }
         ],
         "tools": [image_tool],
-        "tool_choice": "auto",
+        "tool_choice": tool_choice,
         "parallel_tool_calls": False,
         "store": False,
         "reasoning": {"effort": "low", "summary": "auto"},
@@ -440,6 +570,7 @@ def _post_for_image(
     item_meta: JsonDict = {}
     last_revised_prompt: str = ""
     last_phase = "connecting"
+    failure_detail: str | None = None
 
     def emit(msg: str) -> None:
         if progress:
@@ -459,6 +590,23 @@ def _post_for_image(
             elif t == "response.image_generation_call.partial_image":
                 last_phase = "receiving image"
                 emit(f"receiving image (partial {saw_event_types[t]})")
+            if t in ("error", "response.failed"):
+                # Capture the backend's own failure reason so a mid-stream
+                # failure surfaces *why* (quota / moderation / transient) rather
+                # than a generic "no image returned".
+                detail = None
+                if isinstance(evt.get("response"), dict):
+                    err = evt["response"].get("error")
+                    if isinstance(err, dict):
+                        detail = err.get("message") or err.get("code")
+                if detail is None:
+                    detail = evt.get("message") or evt.get("code") or (
+                        evt.get("error") if isinstance(evt.get("error"), str) else None
+                    )
+                if isinstance(evt.get("error"), dict):
+                    detail = evt["error"].get("message") or detail
+                if detail:
+                    failure_detail = str(detail)
             if t == "response.output_item.done":
                 item = evt.get("item")
                 if isinstance(item, dict) and item.get("type") == "image_generation_call":
@@ -492,6 +640,11 @@ def _post_for_image(
 
     if not image_b64:
         types_seen = ", ".join(sorted(saw_event_types)) or "(none)"
+        if failure_detail:
+            raise GatewayError(
+                f"backend failed mid-generation: {failure_detail} "
+                f"(events seen: {types_seen})"
+            )
         raise GatewayError(f"no image returned. events seen: {types_seen}")
 
     if last_revised_prompt:
@@ -1131,12 +1284,17 @@ def _positive_int(value: str) -> int:
 # ---------- codex backend (headless responses API) ----------
 
 def run_codex(
-    args: argparse.Namespace, progress: bool, stall_timeout: float, start: float
+    args: argparse.Namespace, progress: bool, stall_timeout: float, start: float,
+    refs: list[str] | None = None,
 ) -> tuple[bytes, JsonDict]:
     """Generate an image via the headless codex/responses endpoint.
 
     Fast and dependency-free, but every call bills the metered Codex-usage
     bucket. Returns (image_bytes, meta); exits on unrecoverable failure.
+
+    When `refs` (reference image paths/URLs) are supplied, runs image-to-image:
+    each reference is attached as an `input_image` content part and the image
+    tool is forced (`tool_choice: required`).
 
     Concurrency is gated at CODEX_CONCURRENCY_DEFAULT (4) parallel runs by a
     cross-process semaphore — wide enough for real fan-out, tight enough that a
@@ -1153,8 +1311,20 @@ def run_codex(
             "requires a subscription OAuth token.)"
         )
 
+    loaded_refs: list[tuple[str, str]] | None = None
+    if refs:
+        loaded_refs = [_load_reference(r) for r in refs]
+        if progress:
+            approx = sum(len(b64) for b64, _ in loaded_refs)
+            print(
+                f"[{time.monotonic() - start:6.1f}s] image-to-image: "
+                f"{len(loaded_refs)} reference(s), ~{approx // 1024} KB base64",
+                file=sys.stderr,
+            )
+
     version = _detect_codex_version()
-    payload = _build_payload(args.prompt, args.size, args.format, args.model)
+    payload = _build_payload(args.prompt, args.size, args.format, args.model,
+                             refs=loaded_refs)
 
     with _concurrency_slot("codex", _backend_limit("codex", CODEX_CONCURRENCY_DEFAULT),
                            progress, start):
@@ -1235,6 +1405,18 @@ def _dispatch(
         if progress:
             print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
 
+    refs = getattr(args, "ref", None)
+
+    # Image-to-image: a reference was supplied. Only the codex backend supports
+    # it (the web backend types into the composer and can't attach a file), so
+    # route refs to codex regardless of --backend, with a clear note when that
+    # overrides an explicit web choice.
+    if refs:
+        if args.backend == "web":
+            note("image-to-image requires the codex backend; --backend web "
+                 "ignored for this reference-image request.")
+        return run_codex(args, progress, stall_timeout, start, refs=refs)
+
     if args.backend == "codex":
         return run_codex(args, progress, stall_timeout, start)
 
@@ -1303,6 +1485,15 @@ def main() -> int:
     )
     parser.add_argument("--format", default="png", choices=["png", "jpeg", "webp"])
     parser.add_argument("--model", default=os.environ.get("CHATGPT_IMAGEGEN_MODEL", "gpt-5.5"))
+    parser.add_argument(
+        "-i", "--ref",
+        action="append",
+        default=None,
+        metavar="PATH_OR_URL",
+        help="Reference image for image-to-image (repeatable). A local path or "
+             "http(s) URL. When given, generation edits the reference(s) instead "
+             "of rendering from text — runs on the codex backend.",
+    )
     parser.add_argument(
         "--backend",
         choices=["auto", "web", "codex"],

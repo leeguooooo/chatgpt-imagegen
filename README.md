@@ -106,6 +106,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--session` | `imagegen-<pid>` | *(web)* Reuse a named `chrome-use` Chrome tab group across runs. |
 | `--project` | `imagegen` | *(web)* ChatGPT Project to file the conversation under — matched by exact name, **created on first use**, reused afterwards. Pass `--project ""` for a plain top-level chat. Also `CHATGPT_IMAGEGEN_PROJECT`. Failures degrade to a plain chat with a warning, never block the run. |
 | `--keep-tab` | off | *(web)* Leave the ChatGPT tab open after generating (default closes it). |
+| `-i`, `--ref PATH_OR_URL` | — | **Image-to-image.** Reference image to edit (repeatable for multiple references). A local path or `http(s)` URL. When given, the model edits the reference(s) instead of rendering from text. Runs on the **codex** backend. See [Image-to-image](#image-to-image). |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created. A warning is printed when the suffix and `--format` disagree (e.g. `-o foo.jpg --format png`). |
 | `--size` | `auto` | `auto` or any `WIDTHxHEIGHT`. Verified working: `1024x1024`, `1024x1536`, `1536x1024`. Larger sizes are forwarded as-is. |
 | `--format` | `png` | `png` \| `jpeg` \| `webp` |
@@ -114,7 +115,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.7.0`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.8.0`) and exit. |
 
 Examples:
 
@@ -132,6 +133,32 @@ chatgpt-imagegen "moody mountain sunset" -o web/hero.png --size 1536x1024
 OUT=$(chatgpt-imagegen "icon" --quiet)
 echo "saved to $OUT"
 ```
+
+## Image-to-image
+
+Pass a reference image with `-i`/`--ref` to **edit it** instead of generating from
+text. The reference is attached to the request as an `input_image` part and the
+image tool is forced, so the model edits the supplied image rather than inventing a
+new one — the same mechanism as dragging an image into the ChatGPT composer and
+asking it to restyle the scene. Still your ChatGPT subscription, still no API key.
+
+```bash
+# Restyle / edit a local image
+chatgpt-imagegen "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg -o out.png
+
+# Reference from a URL
+chatgpt-imagegen "place this product in a minimalist studio scene" -i https://example.com/item.png -o scene.png
+
+# Multiple references (repeat -i) — e.g. several angles of the same subject
+chatgpt-imagegen "put this rug in a cozy living room" -i front.jpg -i detail.jpg -o room.png --size 1024x1536
+```
+
+Notes:
+- Runs on the **codex** backend (the web backend can't attach a file); `--backend web`
+  is ignored for reference-image requests.
+- References are sent as base64; oversized images are auto-downsized to a JPEG under a
+  ~5 MB budget via macOS `sips` when available (no extra dependencies).
+- Supported reference types: PNG, JPEG, WEBP.
 
 Real output of the exact example commands above — every image in this README is made by this tool:
 
