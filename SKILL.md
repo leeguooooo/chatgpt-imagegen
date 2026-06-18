@@ -91,7 +91,8 @@ Useful flags:
 | `--profile auto` \| `relay` \| `NAME` | (web) Which Chrome profile to drive. `auto` (default): use the open Chrome if it's logged in, else auto-switch to a profile that is (detected offline from the cookie DB, read-only). `relay`: only the open Chrome. `"Profile 3"`: that profile. Note: *logged in* ≠ *able to generate* — a free-tier account can still hit its daily image cap. |
 | `--session NAME` | (web) Reuse a named Chrome tab group across runs instead of `imagegen-<pid>`. |
 | `--project NAME` | (web) ChatGPT Project to file the run's conversation under — matched by exact name, **created automatically if absent**, reused if present. Default `imagegen` (or `CHATGPT_IMAGEGEN_PROJECT`). Pass `--project ""` for a plain top-level chat. If the project step fails, the run warns and continues in a plain chat — it never blocks generation. |
-| `--keep-tab` | (web) Leave the ChatGPT tab open after generating (default closes it). Useful for debugging. |
+| `--keep-tab` | (web) Leave the ChatGPT tab open after generating (default closes it). Useful for debugging. Implies `--keep-conversation`. |
+| `--keep-conversation` | (web) Keep the ChatGPT conversation after generating. **Default deletes it** (`PATCH is_visible:false`) so the run leaves no history — it's filed under the project only transiently. Also `CHATGPT_IMAGEGEN_KEEP_CONVERSATION=1`. |
 | `-o PATH` | Always use when you know where the file should go in the repo. |
 | `--size 1024x1024` | Square icons / logos (verified) |
 | `--size 1536x1024` | Landscape hero banners, social cards (verified) |

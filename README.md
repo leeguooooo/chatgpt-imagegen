@@ -38,7 +38,7 @@ The same subscription meters two separate buckets, and which one you spend depen
 
 | Backend | How it generates | Bucket spent | Needs |
 | --- | --- | --- | --- |
-| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`chrome-use`](https://github.com/leeguooooo/chrome-use), formerly `agent-browser-stealth`) and generates in a normal chat — the same surface as typing in the app. Its real-Chrome connect clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. Each run's chat is filed under a ChatGPT **Project** (default `imagegen`, created on first use) so it doesn't litter your history. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | Any logged-in chatgpt.com browser (**free tier works**) + `chrome-use`. |
+| **`web`** | Drives your already-logged-in ChatGPT **browser** (via [`chrome-use`](https://github.com/leeguooooo/chrome-use), formerly `agent-browser-stealth`) and generates in a normal chat — the same surface as typing in the app. Its real-Chrome connect produces the **Cloudflare Turnstile** token a plain/headless client can't forge (CF's edge and the sentinel PoW are passable bare — Turnstile is the wall). Each run is filed under a ChatGPT **Project** (default `imagegen`) and the conversation is **deleted afterwards by default** (`--keep-conversation` to keep it), so it leaves no history. | **ChatGPT conversation** — does *not* touch your metered **Codex-usage** limit. | Any logged-in chatgpt.com browser (**free tier works**) + `chrome-use`. |
 | **`codex`** | Headless POST to `backend-api/codex/responses`, reusing `~/.codex/auth.json`. | **Codex-usage** (the metered bucket). | `codex login`. |
 
 **Default `auto`** tries `web` first (to spare Codex-usage) and falls back to `codex` when no logged-in browser is reachable. Force one with `--backend web` / `--backend codex` (or `CHATGPT_IMAGEGEN_BACKEND`).
@@ -103,10 +103,11 @@ chatgpt-imagegen "<prompt>" [options]
 | --- | --- | --- |
 | `--backend` | `auto` | `auto` \| `web` \| `codex`. `auto` prefers web (spares Codex-usage), falls back to codex if no logged-in browser. See [Backends](#backends). Also `CHATGPT_IMAGEGEN_BACKEND`. |
 | `--profile` | `auto` | *(web)* Which Chrome profile to drive. `auto`: use your open Chrome if it's logged in, else auto-switch to a profile that is (detected offline). `relay`: only your open Chrome. Or a name like `"Profile 3"`. |
-| `--session` | `imagegen-<pid>` | *(web)* Reuse a named `chrome-use` Chrome tab group across runs. |
+| `--session` | `imagegen` | *(web)* Named `chrome-use` Chrome tab group reused across runs (one stable daemon instead of one per run). Falls back to `imagegen-<pid>` when web concurrency is raised above 1, to isolate parallel runs. |
 | `--project` | `imagegen` | *(web)* ChatGPT Project to file the conversation under — matched by exact name, **created on first use**, reused afterwards. Pass `--project ""` for a plain top-level chat. Also `CHATGPT_IMAGEGEN_PROJECT`. Failures degrade to a plain chat with a warning, never block the run. |
-| `--keep-tab` | off | *(web)* Leave the ChatGPT tab open after generating (default closes it). |
-| `--web-model` | `Instant` | *(web)* Composer model/effort selected before generating, matched by exact picker label. The **`Pro`** tier has no native image generator (it answers image requests by writing Python), so the web backend switches off it automatically. Pass `""` to keep whatever is selected. Also `CHATGPT_IMAGEGEN_WEB_MODEL`. |
+| `--keep-tab` | off | *(web)* Leave the ChatGPT tab open after generating (default closes it). Implies `--keep-conversation`. |
+| `--keep-conversation` | off | *(web)* Keep the ChatGPT conversation after generating. **Default deletes it** so the run leaves no history (filed under the project only transiently). Also `CHATGPT_IMAGEGEN_KEEP_CONVERSATION=1`. |
+| `--web-model` | `Instant,Auto` | *(web)* Comma-separated model/effort candidates; the first one present in the picker is selected before generating. The **`Pro`** tier has no native image generator (it answers image requests by writing Python), so the web backend switches off it automatically. Pass `""` to keep whatever is selected. Also `CHATGPT_IMAGEGEN_WEB_MODEL`. |
 | `-i`, `--ref PATH_OR_URL` | — | **Image-to-image.** Reference image to edit (repeatable for multiple references). A local path or `http(s)` URL. When given, the model edits the reference(s) instead of rendering from text. Works on **both** backends. See [Image-to-image](#image-to-image). |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | Output file; parent dirs created. A warning is printed when the suffix and `--format` disagree (e.g. `-o foo.jpg --format png`). |
 | `--size` | `auto` | `auto` or any `WIDTHxHEIGHT`. Verified working: `1024x1024`, `1024x1536`, `1536x1024`. Larger sizes are forwarded as-is. |
@@ -116,7 +117,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--stall-timeout` | `120` | Max seconds of silence (no data from backend) before declaring a **stall** — caught well before the total budget. Clamped to `--timeout`. |
 | `--quiet` | off | Print **only** the saved path on stdout (perfect for agent pipelines). Progress still streams to stderr — use `--no-progress` to silence it. |
 | `--no-progress` | off | Suppress the stderr progress timeline (errors still print). |
-| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.9.0`) and exit. |
+| `-V`, `--version` | — | Print the CLI version (`chatgpt-imagegen 0.10.0`) and exit. |
 
 Examples:
 

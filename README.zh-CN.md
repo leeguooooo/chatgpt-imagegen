@@ -36,7 +36,7 @@ OpenAI 的图像生成有两条完全独立的路:
 
 | 后端 | 怎么生成 | 花哪个桶 | 前置条件 |
 | --- | --- | --- | --- |
-| **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`chrome-use`](https://github.com/leeguooooo/chrome-use),原名 `agent-browser-stealth`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠真 Chrome 连接过掉 Cloudflare + sentinel 工作量证明(无头/普通客户端过不了)。每次的对话自动归档进一个 ChatGPT **项目**(默认 `imagegen`,首次自动创建),不再刷屏历史列表。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 任意登录了 chatgpt.com 的浏览器(**免费档也行**)+ `chrome-use`。 |
+| **`web`** | 驱动你**已登录的 ChatGPT 浏览器**(经 [`chrome-use`](https://github.com/leeguooooo/chrome-use),原名 `agent-browser-stealth`),在普通对话里出图 —— 跟你在 app 里打字出图是同一个界面。靠真 Chrome 连接产出 **Cloudflare Turnstile** token(裸客户端伪造不出来——CF 边缘和 sentinel PoW 都能裸过,Turnstile 才是墙)。每次出图归进一个 ChatGPT **项目**(默认 `imagegen`),且**默认出图后删除该对话**(`--keep-conversation` 可保留),不留历史。 | **ChatGPT 对话** —— **不**占用计量的 **Codex 用量**额度。 | 任意登录了 chatgpt.com 的浏览器(**免费档也行**)+ `chrome-use`。 |
 | **`codex`** | 无头 POST 到 `backend-api/codex/responses`,复用 `~/.codex/auth.json`。 | **Codex 用量**(计量的那个桶)。 | `codex login`。 |
 
 **默认 `auto`**:先试 `web`(省 Codex 用量),没有可用登录浏览器时回退 `codex`。用 `--backend web` / `--backend codex` 强制其一(或环境变量 `CHATGPT_IMAGEGEN_BACKEND`)。
@@ -101,9 +101,10 @@ chatgpt-imagegen "<prompt>" [options]
 | --- | --- | --- |
 | `--backend` | `auto` | `auto` \| `web` \| `codex`。`auto` 优先 web(省 Codex 用量),没有登录浏览器时回退 codex。见[两个后端](#两个后端)。也可用 `CHATGPT_IMAGEGEN_BACKEND`。 |
 | `--profile` | `auto` | *(web)* 驱动哪个 Chrome profile。`auto`:你开着的 Chrome 登录了就用它,否则自动换到一个登录了的(离线探测)。`relay`:只用你开着的 Chrome。或写 profile 名如 `"Profile 3"`。 |
-| `--session` | `imagegen-<pid>` | *(web)* 跨次运行复用一个命名的 `chrome-use` Chrome 标签组。 |
+| `--session` | `imagegen` | *(web)* 跨次运行复用的 `chrome-use` Chrome 标签组名(一个稳定 daemon,而非每次跑都新起一个)。当 web 并发被调到 1 以上时回落为 `imagegen-<pid>`,以隔离并行运行。 |
 | `--project` | `imagegen` | *(web)* 对话归档到哪个 ChatGPT 项目 —— 按名字精确匹配,**没有就自动创建**,有就直接复用。传 `--project ""` 用普通顶层对话。也可用 `CHATGPT_IMAGEGEN_PROJECT`。项目步骤失败只降级为普通对话并告警,绝不阻塞出图。 |
-| `--keep-tab` | 关 | *(web)* 出图后保留 ChatGPT 标签页(默认关闭它)。 |
+| `--keep-tab` | 关 | *(web)* 出图后保留 ChatGPT 标签页(默认关闭它)。隐含 `--keep-conversation`。 |
+| `--keep-conversation` | 关 | *(web)* 出图后保留 ChatGPT 对话。**默认会删除对话**,不留历史记录(只是临时归进 project)。也可经 `CHATGPT_IMAGEGEN_KEEP_CONVERSATION=1` 设置。 |
 | `-o`, `--out PATH` | `assets/generated/<slug>.<ext>` | 输出文件;父目录自动创建。后缀与 `--format` 不一致时会告警(如 `-o foo.jpg --format png`)。 |
 | `--size` | `auto` | `auto` 或任意 `WIDTHxHEIGHT`。已验证:`1024x1024`、`1024x1536`、`1536x1024`。更大尺寸原样透传。 |
 | `--format` | `png` | `png` \| `jpeg` \| `webp` |
@@ -215,7 +216,7 @@ chatgpt-imagegen --backend web
        (签名的 estuary/content URL 由浏览器自己的 cookie 授权)
 ```
 
-token 不出浏览器。每次的对话落在 `imagegen` 项目里(自动创建),不再堆在顶层历史;传 `--project ""` 可退回旧行为。
+token 不出浏览器。每次出图落在 `imagegen` 项目里(自动创建),且**默认出图后删除该对话**不留历史(`--keep-conversation` 可保留);传 `--project ""` 可退回旧行为。
 
 ### `codex` 后端
 
