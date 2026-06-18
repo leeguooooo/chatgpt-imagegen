@@ -50,7 +50,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -97,6 +97,14 @@ WEB_PROJECT_URL = "https://chatgpt.com/g/{gizmo_id}/project"
 DEFAULT_PROJECT = "imagegen"
 # Image assets render as <img> whose src points at one of these backend paths.
 WEB_IMG_SRC_RE = r"estuary/content|files/download|oaiusercontent"
+# Composer model the web backend forces before generating. The "Pro" reasoning
+# tier has NO built-in image generator — it answers an image request by running
+# Code Interpreter (Python/PIL, a downloadable file) or flat-out refusing ("image
+# generation isn't available in this chat, switch to GPT-5"), so the page never
+# yields a native image asset and detection times out. "Instant" generates
+# natively. The picker is sticky per browser, so a Chrome left on Pro poisons
+# every web run until we switch it. Override via CHATGPT_IMAGEGEN_WEB_MODEL.
+WEB_MODEL_DEFAULT = "Instant"
 
 JsonDict = dict[str, Any]
 
@@ -395,16 +403,42 @@ def _downsize_reference(src_path: str) -> bytes | None:
 
 # ---------- request ----------
 
+def _build_web_text(prompt: str, size: str, is_edit: bool = False) -> str:
+    """Natural-language image request for the ChatGPT *page* (web backend).
+
+    Deliberately NOT the codex wording: the page has no API `image_generation`
+    tool and no output-format knob — those are codex-only concepts. Naming a
+    "tool" or demanding an "Output format: png … produce only the image" pushes
+    the page model toward Code Interpreter, which answers an image request by
+    writing Python/PIL and returning a downloadable file — never a native image
+    asset. So we ask plainly for a picture and let the native generator fire.
+    When `is_edit`, anchor on the attached reference so it edits rather than
+    inventing a fresh subject.
+    """
+    if is_edit:
+        text = (
+            f"Edit the attached image directly with your built-in image "
+            f"generator: {prompt}. Keep the reference as the canonical subject — "
+            f"reproduce its pattern, colours, and texture faithfully."
+        )
+    else:
+        text = f"Create an image with your built-in image generator: {prompt}."
+    if size and size != "auto":
+        text += f" Aspect ratio / size: {size}."
+    return text
+
+
 def _build_user_text(
     prompt: str, size: str, output_format: str, is_edit: bool = False
 ) -> str:
-    """Natural-language instruction shared by both backends.
+    """Natural-language instruction for the **codex** backend.
 
-    The web UI has no explicit size/format knobs, so we fold those hints into
-    the prompt exactly the way the codex tool description does — the model
-    reads them and picks the matching aspect ratio. When `is_edit`, the
-    instruction anchors on the attached reference image so the model edits it
-    faithfully rather than inventing a fresh subject.
+    The codex request wires a real `image_generation` tool, so naming it and the
+    output format is correct here (unlike the web page — see _build_web_text).
+    The codex endpoint has no size/format knobs in the message body, so we fold
+    those hints into the prompt; the model reads them and picks the aspect ratio.
+    When `is_edit`, the instruction anchors on the attached reference image so
+    the model edits it faithfully rather than inventing a fresh subject.
     """
     if is_edit:
         user_text = (
@@ -815,9 +849,17 @@ _JS_STATE = r"""(() => {
     'button[data-testid="stop-button"], button[aria-label*="Stop" i]'
   );
   const re = new RegExp(%s);
+  // The generated image renders in <main> but OUTSIDE any message bubble (it's
+  // an image-generation card, not an assistant text turn — so we can't scope to
+  // the assistant role). An img2img reference, however, is echoed INSIDE the
+  // user bubble with a fresh estuary/content src not in the pre-submit baseline.
+  // So detect fresh main images but exclude any that belong to a user message.
+  const userSrcs = new Set();
+  document.querySelectorAll('[data-message-author-role="user"] img')
+    .forEach(i => { const s = i.currentSrc || i.src; if (s) userSrcs.add(s); });
   const fresh = [...document.querySelectorAll('main img')]
     .map(i => i.currentSrc || i.src)
-    .filter(s => re.test(s) && !seen.has(s));
+    .filter(s => re.test(s) && !seen.has(s) && !userSrcs.has(s));
   const a = document.querySelectorAll('[data-message-author-role="assistant"]');
   const lastA = a[a.length - 1];
   const dlg = [...document.querySelectorAll('[role="dialog"]')]
@@ -970,6 +1012,86 @@ def _enter_project(ab: str, session: str, name: str, remaining, emit) -> None:
                 pass
 
 
+# JS: locate the composer model-picker button and return its label + viewport
+# center {text, x, y}, or null. The picker has no stable selector, so match the
+# one menu-opening button whose short label names a model/effort.
+_JS_MODEL_BTN = r"""(() => {
+  const b = [...document.querySelectorAll('button')].find(b =>
+    b.getAttribute('aria-haspopup') === 'menu' &&
+    (b.innerText || '').trim().length > 0 &&
+    (b.innerText || '').trim().length < 25 &&
+    /\b(Auto|Pro|Instant|Medium|High|Thinking|Fast|GPT)\b/.test(b.innerText || ''));
+  if (!b) return JSON.stringify(null);
+  const r = b.getBoundingClientRect();
+  return JSON.stringify({text: b.innerText.replace(/\s+/g, ' ').trim(),
+                         x: Math.round(r.x + r.width / 2),
+                         y: Math.round(r.y + r.height / 2)});
+})()"""
+
+# JS: find an open-menu radio/item by exact label, return its center {x, y}.
+_JS_MENU_ITEM = r"""(() => {
+  const name = %s;
+  const m = [...document.querySelectorAll('[role="menuitemradio"],[role="menuitem"]')]
+    .find(e => (e.innerText || '').replace(/\s+/g, ' ').trim() === name);
+  if (!m) return JSON.stringify(null);
+  const r = m.getBoundingClientRect();
+  return JSON.stringify({x: Math.round(r.x + r.width / 2),
+                         y: Math.round(r.y + r.height / 2)});
+})()"""
+
+
+def _ensure_web_model(ab, session, model_label, remaining, emit) -> None:
+    """Switch the ChatGPT composer to ``model_label`` (e.g. "Instant").
+
+    Needed because "Pro" has no native image generator (see WEB_MODEL_DEFAULT).
+    The menu renders in a React portal that ignores synthetic ``.click()`` and
+    re-renders away injected ids, so we drive it by real coordinate clicks read
+    fresh from getBoundingClientRect each step.
+
+    Best-effort: on any failure this warns and proceeds with the current model,
+    exactly like _enter_project — selection is a nicety, not worth aborting over.
+    """
+    if not model_label:
+        return
+    want = model_label.strip().lower()
+    try:
+        btn = _ab_eval(ab, _JS_MODEL_BTN, session=session,
+                       timeout=min(15.0, remaining()))
+        if not isinstance(btn, dict):
+            emit("warning: model picker not found; leaving model as-is")
+            return
+        if btn.get("text", "").strip().lower().startswith(want):
+            return  # already on the wanted model (picker is sticky)
+        emit(f"switching model {btn.get('text')!r} → {model_label!r}")
+        _ab(ab, "click", str(btn["x"]), str(btn["y"]),
+            session=session, timeout=min(15.0, remaining()))
+        time.sleep(0.6)
+        item = _ab_eval(ab, _JS_MENU_ITEM % json.dumps(model_label),
+                        session=session, timeout=min(15.0, remaining()))
+        if not isinstance(item, dict):
+            emit(f"warning: model {model_label!r} not in the picker; leaving as-is")
+            try:  # close the menu so it can't swallow the prompt
+                _ab(ab, "press", "Escape", session=session,
+                    timeout=min(10.0, remaining()))
+            except GatewayError:
+                pass
+            return
+        _ab(ab, "click", str(item["x"]), str(item["y"]),
+            session=session, timeout=min(15.0, remaining()))
+        time.sleep(0.4)
+        now = _ab_eval(ab, _JS_MODEL_BTN, session=session,
+                       timeout=min(15.0, remaining()))
+        cur = now.get("text") if isinstance(now, dict) else None
+        if isinstance(cur, str) and cur.strip().lower().startswith(want):
+            emit(f"model set to {model_label!r}")
+        else:
+            emit(f"warning: model may not have switched (now {cur!r})")
+    except WebRateLimited:
+        raise
+    except GatewayError as e:
+        emit(f"warning: could not switch model ({e}); using the current one")
+
+
 def _backend_limit(kind: str, default: int) -> int:
     """Concurrency cap for a backend, via CHATGPT_IMAGEGEN_<KIND>_CONCURRENCY.
 
@@ -1040,8 +1162,15 @@ def _concurrency_slot(kind: str, limit: int, progress: bool, start: float) -> "I
             slot.close()
 
 
-def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[bytes, JsonDict]:
+def run_web(
+    args: argparse.Namespace, progress: bool, start: float,
+    refs: list[str] | None = None,
+) -> tuple[bytes, JsonDict]:
     """Generate an image by driving the user's logged-in ChatGPT browser.
+
+    When ``refs`` (reference image paths/URLs) are supplied, runs image-to-image:
+    each reference is attached to the composer via `chrome-use upload` before the
+    edit prompt is submitted — no Codex-usage, same surface as text-to-image.
 
     Returns (image_bytes, meta). Raises GatewayError / exits on failure.
     """
@@ -1053,7 +1182,7 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
     # blocked on the serialize lock (issue #7) before reaching here, and that
     # queue wait must not eat into the --timeout image budget.
     deadline = time.monotonic() + args.timeout
-    user_text = _build_user_text(args.prompt, args.size, args.format)
+    user_text = _build_web_text(args.prompt, args.size, is_edit=bool(refs))
 
     def emit(msg: str) -> None:
         if progress:
@@ -1122,16 +1251,108 @@ def run_web(args: argparse.Namespace, progress: bool, start: float) -> tuple[byt
         project = (args.project or "").strip()
         if project:
             _enter_project(ab, session, project, remaining, emit)
+        _ensure_web_model(
+            ab, session,
+            getattr(args, "web_model", WEB_MODEL_DEFAULT) or WEB_MODEL_DEFAULT,
+            remaining, emit)
         return _generate_in_browser(
-            ab, session, user_text, args, deadline, remaining, emit)
+            ab, session, user_text, args, deadline, remaining, emit, refs=refs)
     finally:
         if not args.keep_tab:
             _close()
 
 
-def _generate_in_browser(ab, session, user_text, args, deadline, remaining, emit):
+def _resolve_ref_path(ref: str) -> tuple[str, str | None]:
+    """Return (local_path, cleanup_path|None) for a local path or http(s) URL.
+
+    Web img2img hands a real file to `chrome-use upload`, so — unlike the codex
+    helper `_load_reference` — we keep the file on disk rather than base64ing it.
+    URLs download to a temp file the caller deletes via the returned cleanup
+    path. Exits cleanly on a missing file / unsupported type / download failure.
+    """
+    if _is_url(ref):
+        try:
+            req = urllib.request.Request(ref, headers={"User-Agent": FALLBACK_UA})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                raw = r.read()
+        except Exception as e:  # noqa: BLE001
+            sys.exit(f"could not download reference {ref!r}: {e}")
+        mime = _sniff_mime(raw)
+        if mime is None:
+            sys.exit(f"unsupported reference image type for {ref!r} (need PNG, JPEG, or WEBP)")
+        ext = {"image/png": ".png", "image/jpeg": ".jpg",
+               "image/webp": ".webp"}.get(mime, ".img")
+        fd, tmp = tempfile.mkstemp(suffix=ext)
+        os.close(fd)
+        Path(tmp).write_bytes(raw)
+        return tmp, tmp
+    p = Path(ref).expanduser()
+    if not p.is_file():
+        sys.exit(f"reference image not found: {ref}")
+    with p.open("rb") as fh:
+        if _sniff_mime(fh.read(16)) is None:
+            sys.exit(f"unsupported reference image type for {ref!r} (need PNG, JPEG, or WEBP)")
+    return str(p), None
+
+
+# JS: count reference attachments sitting in the composer (uploaded, not yet
+# sent). Used to confirm an upload landed before we submit the edit prompt.
+_JS_PENDING_UPLOADS = r"""(() => {
+  const form = document.querySelector('form') || document.body;
+  const imgs = [...form.querySelectorAll('img')]
+    .filter(i => /blob:|estuary\/content|oaiusercontent/.test(i.src || ''));
+  return JSON.stringify(imgs.length);
+})()"""
+
+
+def _upload_references(ab, session, ref_paths, remaining, emit) -> None:
+    """Attach reference image files to the composer via `chrome-use upload`.
+
+    ChatGPT's composer exposes a standard <input accept="image/*">, so the
+    generic upload command drives it with NO ChatGPT-specific support needed.
+    Waits for the thumbnail(s) to render so the caller's baseline capture counts
+    them as pre-existing — never mistaking a reference for the generated result.
+    """
+    emit(f"attaching {len(ref_paths)} reference image(s)")
+    _ab(ab, "upload", 'input[accept="image/*"]', *ref_paths,
+        session=session, timeout=min(90.0, remaining()))
+    for _ in range(15):  # best-effort confirmation; proceed regardless
+        try:
+            n = _ab_eval(ab, _JS_PENDING_UPLOADS, session=session,
+                         timeout=min(10.0, remaining()))
+        except GatewayError:
+            n = 0
+        if isinstance(n, int) and n >= 1:
+            emit("reference attached")
+            time.sleep(2.0)  # let the upload finalise server-side before we send
+            return
+        time.sleep(1.0)
+    emit("warning: reference attachment not confirmed; submitting anyway")
+
+
+def _generate_in_browser(ab, session, user_text, args, deadline, remaining, emit,
+                         refs=None):
+    # Image-to-image: attach the reference(s) to the composer FIRST, then delete
+    # any temp downloads — the browser has uploaded the bytes to ChatGPT by the
+    # time the thumbnail renders, so the local copy is no longer needed.
+    if refs:
+        ref_paths: list[str] = []
+        cleanups: list[str] = []
+        for r in refs:
+            path, cleanup = _resolve_ref_path(r)
+            ref_paths.append(path)
+            if cleanup:
+                cleanups.append(cleanup)
+        _upload_references(ab, session, ref_paths, remaining, emit)
+        for c in cleanups:
+            try:
+                os.unlink(c)
+            except OSError:
+                pass
+
     # Capture the baseline set of image srcs already on the page so we never
-    # mistake a prior image for the new one.
+    # mistake a prior image — INCLUDING a just-uploaded reference, whose src is
+    # also an estuary/content URL — for the new one.
     baseline = _ab_eval(ab, _JS_BASELINE % json.dumps(WEB_IMG_SRC_RE),
                         session=session, timeout=min(20.0, remaining()))
     if not isinstance(baseline, list):
@@ -1145,23 +1366,41 @@ def _generate_in_browser(ab, session, user_text, args, deadline, remaining, emit
     # both Enter and the send button then work.
     _ab(ab, "click", "#prompt-textarea", session=session, timeout=min(20.0, remaining()))
     _ab(ab, "keyboard", "type", user_text, session=session, timeout=min(60.0, remaining()))
-    _ab(ab, "press", "Enter", session=session, timeout=min(20.0, remaining()))
-    # Fallback: if Enter didn't take (composer still holds the text), click send.
-    try:
-        still_there = _ab_eval(
-            ab,
-            "(() => { const t=(document.querySelector('#prompt-textarea')||{}).textContent||''; "
-            "return JSON.stringify(t.trim().length>0); })()",
-            session=session, timeout=min(15.0, remaining()),
-        )
-    except GatewayError:
-        still_there = False
-    if still_there:
+
+    def _composer_empty() -> bool:
+        # A sent message clears the composer; an empty composer is our proof the
+        # submit actually left the page (vs. a swallowed Enter leaving it stuck).
+        try:
+            return bool(_ab_eval(
+                ab,
+                "(() => { const t=(document.querySelector('#prompt-textarea')||{})"
+                ".textContent||''; return JSON.stringify(t.trim().length===0); })()",
+                session=session, timeout=min(15.0, remaining())))
+        except GatewayError:
+            return False
+
+    # Retry until the composer empties. With an attached reference the send button
+    # is briefly disabled while the upload finalises server-side, so the first
+    # Enter (or send click) can be swallowed — a single attempt would leave the
+    # prompt stuck in the box and the poll below would hang until timeout.
+    sent = False
+    for _ in range(6):
+        _ab(ab, "press", "Enter", session=session, timeout=min(20.0, remaining()))
+        time.sleep(1.0)
+        if _composer_empty():
+            sent = True
+            break
         try:
             _ab(ab, "click", 'button[data-testid="send-button"]',
                 session=session, timeout=min(15.0, remaining()))
         except GatewayError:
             pass
+        time.sleep(1.5)
+        if _composer_empty():
+            sent = True
+            break
+    if not sent:
+        emit("warning: composer did not clear — the prompt may not have sent")
 
     # Poll until the stream stops AND a brand-new image asset is present and
     # stable across two reads (guards against grabbing a mid-render partial).
@@ -1406,33 +1645,27 @@ def _dispatch(
             print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
 
     refs = getattr(args, "ref", None)
-
-    # Image-to-image: a reference was supplied. Only the codex backend supports
-    # it (the web backend types into the composer and can't attach a file), so
-    # route refs to codex regardless of --backend, with a clear note when that
-    # overrides an explicit web choice.
-    if refs:
-        if args.backend == "web":
-            note("image-to-image requires the codex backend; --backend web "
-                 "ignored for this reference-image request.")
-        return run_codex(args, progress, stall_timeout, start, refs=refs)
+    # Image-to-image (refs) is now supported on BOTH backends: web attaches the
+    # reference to the composer via `chrome-use upload`, codex sends it as an
+    # input_image part. So refs ride the normal backend selection below — auto
+    # still prefers web (spares Codex-usage), exactly like text-to-image.
 
     if args.backend == "codex":
-        return run_codex(args, progress, stall_timeout, start)
+        return run_codex(args, progress, stall_timeout, start, refs=refs)
 
     web_limit = _backend_limit("web", WEB_CONCURRENCY_DEFAULT)
 
     if args.backend == "web":
         try:
             with _concurrency_slot("web", web_limit, progress, start):
-                return run_web(args, progress, start)
+                return run_web(args, progress, start, refs=refs)
         except GatewayError as e:
             sys.exit(str(e))
 
     # auto
     try:
         with _concurrency_slot("web", web_limit, progress, start):
-            return run_web(args, progress, start)
+            return run_web(args, progress, start, refs=refs)
     except WebUnavailable as e:
         if _codex_token_present():
             if _find_agent_browser() is None:
@@ -1447,7 +1680,7 @@ def _dispatch(
             else:
                 note(f"web backend unavailable ({e}); falling back to codex "
                      f"(this consumes Codex-usage).")
-            return run_codex(args, progress, stall_timeout, start)
+            return run_codex(args, progress, stall_timeout, start, refs=refs)
         sys.exit(
             "cannot generate an image — neither backend is ready:\n"
             f"  • web:   {e}\n"
@@ -1492,7 +1725,8 @@ def main() -> int:
         metavar="PATH_OR_URL",
         help="Reference image for image-to-image (repeatable). A local path or "
              "http(s) URL. When given, generation edits the reference(s) instead "
-             "of rendering from text — runs on the codex backend.",
+             "of rendering from text. Works on both backends: web attaches it to "
+             "the composer (no Codex-usage), codex sends it as an input_image.",
     )
     parser.add_argument(
         "--backend",
@@ -1517,6 +1751,16 @@ def main() -> int:
              f"found by exact name, created if absent (default: {DEFAULT_PROJECT!r}; "
              "also settable via CHATGPT_IMAGEGEN_PROJECT). Pass an empty string "
              "to use a plain top-level chat instead.",
+    )
+    parser.add_argument(
+        "--web-model",
+        default=os.environ.get("CHATGPT_IMAGEGEN_WEB_MODEL", WEB_MODEL_DEFAULT),
+        help="(web backend) composer model/effort to select before generating "
+             f"(default: {WEB_MODEL_DEFAULT!r}; also settable via "
+             "CHATGPT_IMAGEGEN_WEB_MODEL). Must match a picker label exactly. "
+             "The 'Pro' tier has no native image generator, so leaving it on Pro "
+             "makes the page write Python instead of an image — hence the switch. "
+             "Pass an empty string to keep whatever model is already selected.",
     )
     parser.add_argument(
         "--profile",
