@@ -1,5 +1,7 @@
 # chatgpt-imagegen
 
+[![CI](https://github.com/leeguooooo/chatgpt-imagegen/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/chatgpt-imagegen/actions/workflows/ci.yml)
+
 [English](./README.md) | **中文**
 
 **用你的 ChatGPT 订阅生成图片 —— 不需要 `OPENAI_API_KEY`。**
