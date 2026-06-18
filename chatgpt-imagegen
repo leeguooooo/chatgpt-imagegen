@@ -61,6 +61,9 @@ CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 # `sips` so the no-pip-deps property is preserved.
 REF_B64_BUDGET = 5 * 1024 * 1024
 REF_MAX_EDGE = 2048
+# Hard cap on how many bytes we pull from a `--ref` URL, so a hostile or
+# mistaken link can't OOM us by streaming gigabytes into memory.
+REF_DOWNLOAD_MAX = 25 * 1024 * 1024
 # Default idle gap (seconds) tolerated between SSE chunks before the stream is
 # treated as stalled. The connect timeout urllib applies to urlopen() also
 # governs every subsequent read, so without loosening it a >connect-timeout
@@ -89,6 +92,12 @@ VERSION_PATH = Path.home() / ".codex" / "version.json"
 # same binary as agent-browser / agent-browser-stealth / abs — accept whichever
 # is on PATH, newest name first.
 AB_BIN_CANDIDATES = ("chrome-use", "agent-browser", "agent-browser-stealth", "abs")
+# Minimum chrome-use the web backend was verified against: img2img needs the
+# `upload` subcommand and the model switch needs coordinate clicks (`click X Y`).
+# Older binaries fail those with an opaque "exit N", so we soft-warn (never block
+# — a working older build shouldn't be locked out, and bumping it shouldn't gate
+# on a perfect version string). Stable session reuse below avoids daemon pile-up.
+AB_MIN_VERSION = "1.5.0"
 # A *regular* new chat — NOT a temporary chat. Temporary Chat disables the
 # image_generation tool ("I can't generate images in this temporary chat"),
 # so we must use a normal conversation. Trade-off: each run leaves a chat in
@@ -329,6 +338,27 @@ def _sniff_mime(data: bytes) -> str | None:
     return None
 
 
+def _download_ref_url(ref: str) -> bytes:
+    """Download a `--ref` URL into memory, capped at REF_DOWNLOAD_MAX bytes.
+
+    Reads incrementally and aborts past the cap so a hostile/huge link can't
+    OOM us (`urlopen().read()` with no size is unbounded). Exits cleanly on any
+    network failure or an over-cap body.
+    """
+    try:
+        req = urllib.request.Request(ref, headers={"User-Agent": FALLBACK_UA})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read(REF_DOWNLOAD_MAX + 1)
+    except Exception as e:  # noqa: BLE001
+        sys.exit(f"could not download reference {ref!r}: {e}")
+    if len(raw) > REF_DOWNLOAD_MAX:
+        sys.exit(
+            f"reference {ref!r} is larger than the {REF_DOWNLOAD_MAX // (1024 * 1024)} MB "
+            f"download cap — save it locally and downsize first, then pass the file."
+        )
+    return raw
+
+
 def _load_reference(ref: str) -> tuple[str, str]:
     """Return (base64, mime) for a local path or http(s) URL.
 
@@ -340,12 +370,7 @@ def _load_reference(ref: str) -> tuple[str, str]:
     cleanup: str | None = None
     try:
         if _is_url(ref):
-            try:
-                req = urllib.request.Request(ref, headers={"User-Agent": FALLBACK_UA})
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    raw = r.read()
-            except Exception as e:  # noqa: BLE001
-                sys.exit(f"could not download reference {ref!r}: {e}")
+            raw = _download_ref_url(ref)
             fd, tmp = tempfile.mkstemp(suffix=".img")
             os.close(fd)
             Path(tmp).write_bytes(raw)
@@ -711,6 +736,36 @@ def _find_agent_browser() -> str | None:
         if path:
             return path
     return None
+
+
+def _version_tuple(v: str) -> tuple[int, ...]:
+    """Parse a dotted version like '1.5.23' into (1, 5, 23); junk → (0,)."""
+    nums = re.findall(r"\d+", v or "")
+    return tuple(int(n) for n in nums[:3]) or (0,)
+
+
+def _warn_if_chrome_use_old(ab: str, emit) -> None:
+    """Soft-warn (never block) if chrome-use is below AB_MIN_VERSION.
+
+    The web backend's img2img (`upload`) and model switch (coordinate `click`)
+    need a recent chrome-use; an old binary fails them with an opaque exit code.
+    Best-effort: if `--version` can't be read or parsed, stay quiet.
+    """
+    try:
+        out = subprocess.run([ab, "--version"], capture_output=True, text=True,
+                             timeout=10)
+    except Exception:  # noqa: BLE001
+        return
+    text = (out.stdout or out.stderr or "").strip()
+    m = re.search(r"\d+\.\d+\.\d+", text)
+    if not m:
+        return
+    if _version_tuple(m.group(0)) < _version_tuple(AB_MIN_VERSION):
+        emit(
+            f"warning: chrome-use {m.group(0)} is older than {AB_MIN_VERSION}; "
+            f"image-to-image / model-switch may fail. Update with the installer "
+            f"at github.com/leeguooooo/chrome-use."
+        )
 
 
 def _codex_token_present() -> bool:
@@ -1180,7 +1235,18 @@ def run_web(
     ab = _find_agent_browser()
     if ab is None:
         raise WebUnavailable(f"`chrome-use` is not installed — {_AB_INSTALL_HINT}")
-    session = args.session or f"imagegen-{os.getpid()}"
+    # Default to a STABLE session name so we reuse one chrome-use daemon instead
+    # of leaking a fresh `imagegen-<pid>` daemon every run (chrome-use has no
+    # clean daemon-reap command yet — see leeguooooo/chrome-use#48). Safe because
+    # web runs are serialized to 1 by the concurrency gate; only if the user
+    # lifts that cap do we fall back to a per-pid session so parallel runs don't
+    # share — and cross-contaminate (issue #7) — the same tab.
+    if args.session:
+        session = args.session
+    elif _backend_limit("web", WEB_CONCURRENCY_DEFAULT) == 1:
+        session = "imagegen"
+    else:
+        session = f"imagegen-{os.getpid()}"
     # Budget the generation from NOW, not from process start: web runs may have
     # blocked on the serialize lock (issue #7) before reaching here, and that
     # queue wait must not eat into the --timeout image budget.
@@ -1193,6 +1259,8 @@ def run_web(
 
     def remaining() -> float:
         return max(2.0, deadline - time.monotonic())
+
+    _warn_if_chrome_use_old(ab, emit)
 
     # Decide which browser(s) to try, in order.
     #   relay/off  → only the currently-open Chrome (extension relay).
@@ -1274,12 +1342,7 @@ def _resolve_ref_path(ref: str) -> tuple[str, str | None]:
     path. Exits cleanly on a missing file / unsupported type / download failure.
     """
     if _is_url(ref):
-        try:
-            req = urllib.request.Request(ref, headers={"User-Agent": FALLBACK_UA})
-            with urllib.request.urlopen(req, timeout=60) as r:
-                raw = r.read()
-        except Exception as e:  # noqa: BLE001
-            sys.exit(f"could not download reference {ref!r}: {e}")
+        raw = _download_ref_url(ref)
         mime = _sniff_mime(raw)
         if mime is None:
             sys.exit(f"unsupported reference image type for {ref!r} (need PNG, JPEG, or WEBP)")
