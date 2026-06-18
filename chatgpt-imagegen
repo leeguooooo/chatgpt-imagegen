@@ -116,7 +116,10 @@ WEB_IMG_SRC_RE = r"estuary/content|files/download|oaiusercontent"
 # yields a native image asset and detection times out. "Instant" generates
 # natively. The picker is sticky per browser, so a Chrome left on Pro poisons
 # every web run until we switch it. Override via CHATGPT_IMAGEGEN_WEB_MODEL.
-WEB_MODEL_DEFAULT = "Instant"
+# Comma-separated CANDIDATES tried in order — the first that exists in the picker
+# wins — because plans label the image-capable tier differently (Plus/Pro:
+# "Instant"; others may only have "Auto").
+WEB_MODEL_DEFAULT = "Instant,Auto"
 
 JsonDict = dict[str, Any]
 
@@ -1099,35 +1102,47 @@ _JS_MENU_ITEM = r"""(() => {
 
 
 def _ensure_web_model(ab, session, model_label, remaining, emit) -> None:
-    """Switch the ChatGPT composer to ``model_label`` (e.g. "Instant").
+    """Switch the composer to the first available of ``model_label`` (a
+    comma-separated candidate list, e.g. "Instant,Auto").
 
     Needed because "Pro" has no native image generator (see WEB_MODEL_DEFAULT).
-    The menu renders in a React portal that ignores synthetic ``.click()`` and
-    re-renders away injected ids, so we drive it by real coordinate clicks read
-    fresh from getBoundingClientRect each step.
+    Different plans label the image-capable tier differently (Plus/Pro expose
+    Instant/Medium/…; other plans an "Auto"), so we try a list and take the first
+    that exists in the picker — more robust than one hardcoded label. The menu
+    renders in a React portal that ignores synthetic ``.click()`` and re-renders
+    away injected ids, so we drive it by real coordinate clicks read fresh from
+    getBoundingClientRect each step.
 
     Best-effort: on any failure this warns and proceeds with the current model,
     exactly like _enter_project — selection is a nicety, not worth aborting over.
     """
-    if not model_label:
+    candidates = [c.strip() for c in (model_label or "").split(",") if c.strip()]
+    if not candidates:
         return
-    want = model_label.strip().lower()
+    wants = [c.lower() for c in candidates]
     try:
         btn = _ab_eval(ab, _JS_MODEL_BTN, session=session,
                        timeout=min(15.0, remaining()))
         if not isinstance(btn, dict):
             emit("warning: model picker not found; leaving model as-is")
             return
-        if btn.get("text", "").strip().lower().startswith(want):
-            return  # already on the wanted model (picker is sticky)
-        emit(f"switching model {btn.get('text')!r} → {model_label!r}")
+        cur_text = btn.get("text", "").strip().lower()
+        if any(cur_text.startswith(w) for w in wants):
+            return  # already on an acceptable model (picker is sticky)
+        emit(f"switching model {btn.get('text')!r} → first of {candidates}")
         _ab(ab, "click", str(btn["x"]), str(btn["y"]),
             session=session, timeout=min(15.0, remaining()))
         time.sleep(0.6)
-        item = _ab_eval(ab, _JS_MENU_ITEM % json.dumps(model_label),
-                        session=session, timeout=min(15.0, remaining()))
-        if not isinstance(item, dict):
-            emit(f"warning: model {model_label!r} not in the picker; leaving as-is")
+        chosen = None
+        item = None
+        for cand in candidates:  # first candidate present in the open menu wins
+            it = _ab_eval(ab, _JS_MENU_ITEM % json.dumps(cand),
+                          session=session, timeout=min(15.0, remaining()))
+            if isinstance(it, dict):
+                chosen, item = cand, it
+                break
+        if item is None:
+            emit(f"warning: none of {candidates} in the picker; leaving as-is")
             try:  # close the menu so it can't swallow the prompt
                 _ab(ab, "press", "Escape", session=session,
                     timeout=min(10.0, remaining()))
@@ -1140,8 +1155,8 @@ def _ensure_web_model(ab, session, model_label, remaining, emit) -> None:
         now = _ab_eval(ab, _JS_MODEL_BTN, session=session,
                        timeout=min(15.0, remaining()))
         cur = now.get("text") if isinstance(now, dict) else None
-        if isinstance(cur, str) and cur.strip().lower().startswith(want):
-            emit(f"model set to {model_label!r}")
+        if isinstance(cur, str) and cur.strip().lower().startswith(chosen.lower()):
+            emit(f"model set to {chosen!r}")
         else:
             emit(f"warning: model may not have switched (now {cur!r})")
     except WebRateLimited:
@@ -1821,9 +1836,10 @@ def main() -> int:
     parser.add_argument(
         "--web-model",
         default=os.environ.get("CHATGPT_IMAGEGEN_WEB_MODEL", WEB_MODEL_DEFAULT),
-        help="(web backend) composer model/effort to select before generating "
-             f"(default: {WEB_MODEL_DEFAULT!r}; also settable via "
-             "CHATGPT_IMAGEGEN_WEB_MODEL). Must match a picker label exactly. "
+        help="(web backend) composer model/effort to select before generating — "
+             "a comma-separated candidate list, first one present in the picker "
+             f"wins (default: {WEB_MODEL_DEFAULT!r}; also settable via "
+             "CHATGPT_IMAGEGEN_WEB_MODEL). Labels must match the picker exactly. "
              "The 'Pro' tier has no native image generator, so leaving it on Pro "
              "makes the page write Python instead of an image — hence the switch. "
              "Pass an empty string to keep whatever model is already selected.",
