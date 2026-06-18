@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -1073,6 +1073,50 @@ def _enter_project(ab: str, session: str, name: str, remaining, emit) -> None:
                 pass
 
 
+# JS: delete (hide) the conversation currently open in the tab. ChatGPT's own
+# "delete" is a PATCH with `is_visible:false` — it drops the chat from history,
+# search, and the sidebar. Conversation id comes from the `/c/<id>` URL segment
+# (works for both plain `/c/…` and project `/g/g-p-…/c/…` URLs). accessToken is
+# read from the in-page session, same as _JS_ENSURE_PROJECT.
+_JS_DELETE_CONV = r"""(async () => {
+  try {
+    const m = location.pathname.match(/\/c\/([0-9a-f-]{16,})/i);
+    if (!m) return JSON.stringify({ok: false, error: 'no conversation id in URL'});
+    const id = m[1];
+    const sess = await fetch('/api/auth/session', {credentials: 'include'})
+      .then(r => r.json()).catch(() => null);
+    if (!sess || !sess.accessToken)
+      return JSON.stringify({ok: false, error: 'no accessToken in /api/auth/session'});
+    const r = await fetch('/backend-api/conversation/' + id, {
+      method: 'PATCH', credentials: 'include',
+      headers: {Authorization: 'Bearer ' + sess.accessToken,
+                'Content-Type': 'application/json'},
+      body: JSON.stringify({is_visible: false})});
+    if (!r.ok) return JSON.stringify({ok: false, error: 'delete HTTP ' + r.status});
+    return JSON.stringify({ok: true, id});
+  } catch (e) { return JSON.stringify({ok: false, error: String(e)}); }
+})()"""
+
+
+def _delete_conversation(ab, session, remaining, emit) -> None:
+    """Delete the conversation just used so the run leaves no history.
+
+    Best-effort: the image is already saved by the time we get here, so a delete
+    failure only warns — it never fails the run or loses the image.
+    """
+    try:
+        res = _ab_eval(ab, _JS_DELETE_CONV, session=session,
+                       timeout=min(20.0, remaining()))
+    except GatewayError as e:
+        emit(f"warning: could not delete conversation ({e}); it stays in history")
+        return
+    if isinstance(res, dict) and res.get("ok"):
+        emit("conversation deleted (no history kept)")
+    else:
+        detail = res.get("error") if isinstance(res, dict) else res
+        emit(f"warning: could not delete conversation ({detail}); it stays in history")
+
+
 # JS: locate the composer model-picker button and return its label + viewport
 # center {text, x, y}, or null. The picker has no stable selector, so match the
 # one menu-opening button whose short label names a model/effort.
@@ -1163,6 +1207,11 @@ def _ensure_web_model(ab, session, model_label, remaining, emit) -> None:
         raise
     except GatewayError as e:
         emit(f"warning: could not switch model ({e}); using the current one")
+
+
+def _env_bool(name: str) -> bool:
+    """True if env var ``name`` is set to a truthy value (1/true/yes/on)."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _backend_limit(kind: str, default: int) -> int:
@@ -1341,8 +1390,14 @@ def run_web(
             ab, session,
             getattr(args, "web_model", WEB_MODEL_DEFAULT) or WEB_MODEL_DEFAULT,
             remaining, emit)
-        return _generate_in_browser(
+        result = _generate_in_browser(
             ab, session, user_text, args, deadline, remaining, emit, refs=refs)
+        # Image is saved by now. Delete the conversation so no history is left —
+        # the default. `--keep-conversation` opts out; `--keep-tab` (debugging)
+        # implies keeping it, since an open tab on a deleted chat is useless.
+        if not getattr(args, "keep_conversation", False) and not args.keep_tab:
+            _delete_conversation(ab, session, remaining, emit)
+        return result
     finally:
         if not args.keep_tab:
             _close()
@@ -1856,7 +1911,17 @@ def main() -> int:
         "--keep-tab",
         action="store_true",
         help="(web backend) leave the ChatGPT tab open after generating instead "
-             "of closing it.",
+             "of closing it. Implies --keep-conversation (an open tab on a "
+             "deleted chat is useless).",
+    )
+    parser.add_argument(
+        "--keep-conversation",
+        action="store_true",
+        default=_env_bool("CHATGPT_IMAGEGEN_KEEP_CONVERSATION"),
+        help="(web backend) keep the ChatGPT conversation after generating. "
+             "Default: the conversation is DELETED so the run leaves no history "
+             "(it's filed under the project only transiently). Also settable via "
+             "CHATGPT_IMAGEGEN_KEEP_CONVERSATION=1.",
     )
     parser.add_argument(
         "--timeout",
