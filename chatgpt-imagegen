@@ -5,8 +5,10 @@ Two backends produce the same kind of bitmap, but bill different buckets:
 
   * web (default): drives your already-logged-in ChatGPT browser via
     `chrome-use`, generating on the ChatGPT *conversation* surface. The real
-    browser clears Cloudflare + the sentinel proof-of-work a headless client
-    cannot replicate. This does NOT consume the metered Codex-usage limit —
+    browser produces the Cloudflare Turnstile token a headless client can't
+    forge — that, not Cloudflare's edge or the sentinel proof-of-work (both
+    passable bare), is the actual wall. This does NOT consume the metered
+    Codex-usage limit —
     it's the same surface as typing in the app. Needs a logged-in browser open.
     Conversations are grouped into a ChatGPT Project (default "imagegen",
     created on first use) so they don't litter the chat history.
@@ -79,9 +81,10 @@ VERSION_PATH = Path.home() / ".codex" / "version.json"
 # Web backend: drive the real, logged-in ChatGPT browser via chrome-use
 # (formerly agent-browser-stealth) so image generation runs on the ChatGPT
 # *conversation* surface (the cheap bucket) rather than the codex/responses
-# surface (the metered Codex-usage bucket). The real-Chrome connect clears
-# Cloudflare + the sentinel proof-of-work that a plain/headless client cannot
-# replicate. See README "Backends".
+# surface (the metered Codex-usage bucket). The real-Chrome connect produces
+# the Cloudflare Turnstile token a plain/headless client can't forge (the CF
+# edge IP check and the sentinel proof-of-work are both passable bare —
+# Turnstile is the wall). See README "Backends".
 # Newer installs ship a single `chrome-use` binary; older installs exposed the
 # same binary as agent-browser / agent-browser-stealth / abs — accept whichever
 # is on PATH, newest name first.

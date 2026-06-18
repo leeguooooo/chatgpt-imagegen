@@ -236,7 +236,7 @@ curl https://api.openai.com/v1/images/generations \
 
 ### `web` backend (default)
 
-Drives your logged-in browser via `chrome-use` so generation runs on the consumer ChatGPT surface — which a headless client can't reach, because it sits behind Cloudflare bot-detection **and** a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token). A real browser passes both transparently. The flow:
+Drives your logged-in browser via `chrome-use` so generation runs on the consumer ChatGPT surface — which a headless client can't reach. The gate has three layers: Cloudflare's edge check and a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js`) are both passable by a bare client, but a **Cloudflare Turnstile** token isn't — that interactive token can only come from a real browser, and it's single-use, so there's no "grab the token then go headless" shortcut. The flow:
 
 ```
 chatgpt-imagegen --backend web

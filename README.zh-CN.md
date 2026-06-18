@@ -201,7 +201,7 @@ curl https://api.openai.com/v1/images/generations \
 
 ### `web` 后端(默认)
 
-经 `chrome-use` 驱动你登录的浏览器,让出图跑在消费级 ChatGPT 界面上 —— 无头客户端够不着,因为它挂在 Cloudflare 反爬**和** sentinel 工作量证明后面(`backend-api/sentinel/chat-requirements` + 页面内 `sentinel/sdk.js` 算 token)。真浏览器透明通过两者。流程:
+经 `chrome-use` 驱动你登录的浏览器,让出图跑在消费级 ChatGPT 界面上 —— 无头客户端够不着。防线分三层:Cloudflare 边缘和 sentinel 工作量证明(`backend-api/sentinel/chat-requirements` + 页面内 `sentinel/sdk.js` 算 token)裸客户端**都能过**,真正过不了的是 **Cloudflare Turnstile** token —— 这个交互式 token 只能由真浏览器现场产出,且单次有效,没有"取了 token 再 headless"的捷径。流程:
 
 ```
 chatgpt-imagegen --backend web
