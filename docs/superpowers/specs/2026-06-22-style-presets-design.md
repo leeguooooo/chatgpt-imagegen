@@ -89,6 +89,25 @@ effective_prompt = user_prompt                    # when no style applies
 The rest of the pipeline (size/format hints, backend framing) is unchanged and
 operates on `effective_prompt`.
 
+### Composition affects ONLY the backend text
+
+`args.prompt` is read in three places today: the stderr preview (`prompt:` line ~1958),
+the backend dispatch (`_dispatch` ~1968 → `_build_web_text`/`_build_user_text`), and the
+output filename slug (`_default_out_path` ~1968). The composed `effective_prompt` flows
+into **only the backend dispatch**. The **filename slug** and the **stderr `prompt:`
+preview** must stay derived from the **raw user prompt** — otherwise the long `doodle`
+snippet would pollute the output filename and hide the user's actual prompt in the log.
+Do **not** mutate `args.prompt` in place; compute `effective_prompt` separately and pass
+it only into the dispatch path. The stderr preamble's separate `style: NAME` line (above)
+is how the applied style surfaces in the log.
+
+### Join edge cases
+
+`_compose_prompt` joins with a literal `", "`. If the user prompt already ends in `,`,
+`.`, or whitespace, strip trailing whitespace and a single trailing `,`/`.` before
+joining so the result reads cleanly (e.g. `"a cat."` + snippet → `"a cat, drawn as…"`).
+Empty/whitespace-only snippet → return the prompt unchanged.
+
 ### Resolution order (per run)
 
 1. `--no-style` given → no style (snippet not applied).
@@ -116,7 +135,7 @@ so users/agents can see what was added.
 ### Management (`style` subcommand)
 
 ```
-chatgpt-imagegen style list            # list all names; mark the active default; show snippet preview
+chatgpt-imagegen style list            # list all names; mark the active default; preview each snippet (truncated to ~60 chars + "…")
 chatgpt-imagegen style show NAME       # print one snippet in full
 chatgpt-imagegen style add NAME "..."  # create or overwrite NAME with the given snippet
 chatgpt-imagegen style rm NAME         # delete NAME (clears default if it pointed here)
