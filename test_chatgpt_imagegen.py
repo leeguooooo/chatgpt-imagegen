@@ -35,6 +35,21 @@ def _in_tmp_cwd():
             os.chdir(prev)
 
 
+@contextmanager
+def _tmp_xdg():
+    """Isolate styles.json under a temp XDG_CONFIG_HOME so tests never touch ~/.config."""
+    prev = os.environ.get("XDG_CONFIG_HOME")
+    with tempfile.TemporaryDirectory() as d:
+        os.environ["XDG_CONFIG_HOME"] = d
+        try:
+            yield Path(d)
+        finally:
+            if prev is None:
+                os.environ.pop("XDG_CONFIG_HOME", None)
+            else:
+                os.environ["XDG_CONFIG_HOME"] = prev
+
+
 class SniffMime(unittest.TestCase):
     def test_png(self):
         self.assertEqual(cig._sniff_mime(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8), "image/png")
@@ -106,6 +121,49 @@ class ComposePrompt(unittest.TestCase):
 
     def test_snippet_is_trimmed(self):
         self.assertEqual(cig._compose_prompt("a cat", "  watercolor  "), "a cat, watercolor")
+
+
+class StyleStorage(unittest.TestCase):
+    def test_path_honors_xdg(self):
+        with _tmp_xdg() as d:
+            self.assertEqual(cig._styles_path(),
+                             Path(d) / "chatgpt-imagegen" / "styles.json")
+
+    def test_load_seeds_builtins_when_missing(self):
+        with _tmp_xdg():
+            doc = cig._load_styles()
+            self.assertEqual(doc["default"], "")
+            self.assertIn("doodle", doc["styles"])
+            self.assertTrue(cig._styles_path().exists())  # seeded to disk
+
+    def test_existing_file_not_reseeded(self):
+        with _tmp_xdg():
+            cig._load_styles()                    # seed
+            doc = cig._load_styles()
+            del doc["styles"]["doodle"]           # user removes the builtin
+            cig._save_styles(doc)
+            again = cig._load_styles()
+            self.assertNotIn("doodle", again["styles"])  # stays deleted
+
+    def test_save_roundtrip_and_atomic(self):
+        with _tmp_xdg():
+            doc = cig._load_styles()
+            doc["styles"]["custom"] = "neon glow"
+            doc["default"] = "custom"
+            cig._save_styles(doc)
+            reread = cig._load_styles()
+            self.assertEqual(reread["styles"]["custom"], "neon glow")
+            self.assertEqual(reread["default"], "custom")
+            # no leftover temp file beside the target
+            self.assertEqual(list(cig._styles_path().parent.glob("*.tmp")), [])
+
+    def test_corrupt_file_raises(self):
+        with _tmp_xdg():
+            p = cig._styles_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("{not json", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                cig._load_styles()
 
 
 class BuildWebText(unittest.TestCase):

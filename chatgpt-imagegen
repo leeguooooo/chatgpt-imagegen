@@ -1874,6 +1874,52 @@ def _compose_prompt(user_prompt: str, snippet: str | None) -> str:
     return f"{base}, {snippet}" if base else snippet
 
 
+def _styles_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "chatgpt-imagegen" / "styles.json"
+
+
+def _builtin_styles() -> dict:
+    return dict(_BUILTIN_STYLES)
+
+
+def _default_styles_doc() -> dict:
+    return {"version": 1, "default": "", "styles": _builtin_styles()}
+
+
+def _save_styles(doc: dict) -> None:
+    """Atomically write the styles doc (temp file + os.replace)."""
+    path = _styles_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                   encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _load_styles() -> dict:
+    """Read the styles doc, seeding built-ins on first use. Raises SystemExit
+    (clear message) on a corrupt/unreadable file rather than clobbering it."""
+    path = _styles_path()
+    if not path.exists():
+        doc = _default_styles_doc()
+        _save_styles(doc)
+        return doc
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        raise SystemExit(f"error: cannot read styles file {path}: {e}")
+    if not isinstance(doc, dict) or not isinstance(doc.get("styles"), dict):
+        raise SystemExit(
+            f"error: malformed styles file {path} "
+            f"(expected an object with a 'styles' map). "
+            f"Fix it by hand or run `chatgpt-imagegen style reset`.")
+    doc.setdefault("version", 1)
+    doc.setdefault("default", "")
+    return doc
+
+
 # ---------- main ----------
 
 def main() -> int:
