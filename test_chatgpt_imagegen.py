@@ -192,6 +192,66 @@ class ResolveStyleName(unittest.TestCase):
             cig._resolve_style_name(self.DOC, style_arg="nope", no_style=False)
 
 
+import io
+from contextlib import redirect_stdout
+
+class StyleCommand(unittest.TestCase):
+    def test_add_then_show(self):
+        with _tmp_xdg():
+            self.assertEqual(cig._style_command(["add", "neon", "neon glow"]), 0)
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(cig._style_command(["show", "neon"]), 0)
+            self.assertEqual(out.getvalue().strip(), "neon glow")
+
+    def test_add_invalid_name_raises(self):
+        with _tmp_xdg():
+            with self.assertRaises(SystemExit):
+                cig._style_command(["add", "Bad Name", "x"])
+
+    def test_use_and_clear_default(self):
+        with _tmp_xdg():
+            cig._style_command(["add", "neon", "x"])
+            cig._style_command(["use", "neon"])
+            self.assertEqual(cig._load_styles()["default"], "neon")
+            cig._style_command(["clear"])
+            self.assertEqual(cig._load_styles()["default"], "")
+
+    def test_rm_clears_default_if_pointed_there(self):
+        with _tmp_xdg():
+            cig._style_command(["add", "neon", "x"])
+            cig._style_command(["use", "neon"])
+            cig._style_command(["rm", "neon"])
+            doc = cig._load_styles()
+            self.assertNotIn("neon", doc["styles"])
+            self.assertEqual(doc["default"], "")
+
+    def test_rm_unknown_raises(self):
+        with _tmp_xdg():
+            with self.assertRaises(SystemExit):
+                cig._style_command(["rm", "ghost"])
+
+    def test_list_marks_default(self):
+        with _tmp_xdg():
+            cig._style_command(["add", "neon", "x"])
+            cig._style_command(["use", "neon"])
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cig._style_command(["list"])
+            lines = out.getvalue()
+            self.assertIn("neon", lines)
+            self.assertIn("*", lines)   # default marker
+
+    def test_reset_restores_builtins(self):
+        with _tmp_xdg():
+            cig._style_command(["add", "neon", "x"])
+            cig._style_command(["rm", "doodle"])
+            self.assertEqual(cig._style_command(["reset", "-y"]), 0)
+            doc = cig._load_styles()
+            self.assertIn("doodle", doc["styles"])
+            self.assertNotIn("neon", doc["styles"])
+
+
 class BuildWebText(unittest.TestCase):
     def test_plain_has_no_codex_tool_wording(self):
         t = cig._build_web_text("a red apple", "auto")

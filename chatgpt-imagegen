@@ -1944,6 +1944,110 @@ def _resolve_style_name(doc: dict, *, style_arg: str | None,
     return name
 
 
+def _style_command(argv: list[str]) -> int:
+    """`chatgpt-imagegen style <verb> ...` — manage style presets."""
+    p = argparse.ArgumentParser(
+        prog="chatgpt-imagegen style",
+        description="Manage reusable prompt-style presets "
+                    f"(stored in {_styles_path()}).")
+    sub = p.add_subparsers(dest="verb")
+    sub.add_parser("list", help="list all styles (the active default is marked *)")
+    sp = sub.add_parser("show", help="print one style's snippet in full")
+    sp.add_argument("name")
+    sp = sub.add_parser("add", help="create or overwrite a style")
+    sp.add_argument("name")
+    sp.add_argument("snippet")
+    sp = sub.add_parser("rm", help="delete a style")
+    sp.add_argument("name")
+    sp = sub.add_parser("use", help="set the active default style")
+    sp.add_argument("name")
+    sub.add_parser("clear", help="unset the active default style")
+    rp = sub.add_parser("reset", help="re-seed the built-in styles (discards edits)")
+    rp.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
+    a = p.parse_args(argv)
+
+    if not a.verb:
+        p.print_help()
+        return 2
+
+    doc = _load_styles()
+    styles = doc["styles"]
+
+    if a.verb == "list":
+        if not styles:
+            print("(no styles)")
+            return 0
+        default = doc.get("default") or ""
+        for name in sorted(styles):
+            preview = " ".join(styles[name].split())
+            if len(preview) > 60:
+                preview = preview[:59] + "…"
+            print(f"{'*' if name == default else ' '} {name}: {preview}")
+        if default:
+            print(f"\n* = active default ({default})")
+        else:
+            print("\n(no active default — pass --style NAME to apply one)")
+        return 0
+
+    if a.verb == "show":
+        if a.name not in styles:
+            _die_unknown_style(a.name, styles)
+        print(styles[a.name])
+        return 0
+
+    if a.verb == "add":
+        if not _valid_style_name(a.name):
+            raise SystemExit(
+                f"error: invalid style name {a.name!r}; use lowercase letters, "
+                f"digits, '-' or '_', starting with a letter or digit.")
+        existed = a.name in styles
+        styles[a.name] = a.snippet
+        _save_styles(doc)
+        print(f"{'updated' if existed else 'added'} style {a.name!r}", file=sys.stderr)
+        return 0
+
+    if a.verb == "rm":
+        if a.name not in styles:
+            _die_unknown_style(a.name, styles)
+        del styles[a.name]
+        cleared = doc.get("default") == a.name
+        if cleared:
+            doc["default"] = ""
+        _save_styles(doc)
+        tail = " (was the active default; default cleared)" if cleared else ""
+        print(f"removed style {a.name!r}{tail}", file=sys.stderr)
+        return 0
+
+    if a.verb == "use":
+        if a.name not in styles:
+            _die_unknown_style(a.name, styles)
+        doc["default"] = a.name
+        _save_styles(doc)
+        print(f"active default style set to {a.name!r}", file=sys.stderr)
+        return 0
+
+    if a.verb == "clear":
+        doc["default"] = ""
+        _save_styles(doc)
+        print("active default style cleared", file=sys.stderr)
+        return 0
+
+    if a.verb == "reset":
+        if not a.yes:
+            sys.stderr.write(
+                "This discards all style edits and restores built-ins. "
+                "Continue? [y/N] ")
+            sys.stderr.flush()
+            if sys.stdin.readline().strip().lower() not in ("y", "yes"):
+                print("aborted", file=sys.stderr)
+                return 1
+        _save_styles(_default_styles_doc())
+        print("styles reset to built-ins", file=sys.stderr)
+        return 0
+
+    return 0
+
+
 # ---------- main ----------
 
 def main() -> int:
