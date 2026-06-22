@@ -166,6 +166,32 @@ class StyleStorage(unittest.TestCase):
                 cig._load_styles()
 
 
+class ResolveStyleName(unittest.TestCase):
+    DOC = {"version": 1, "default": "doodle",
+           "styles": {"doodle": "d-snippet", "neon": "n-snippet"}}
+
+    def test_no_style_wins_over_everything(self):
+        self.assertIsNone(cig._resolve_style_name(
+            self.DOC, style_arg="neon", no_style=True))
+
+    def test_style_arg_overrides_default(self):
+        self.assertEqual(cig._resolve_style_name(
+            self.DOC, style_arg="neon", no_style=False), "neon")
+
+    def test_falls_back_to_default(self):
+        self.assertEqual(cig._resolve_style_name(
+            self.DOC, style_arg=None, no_style=False), "doodle")
+
+    def test_empty_default_is_none(self):
+        doc = {"default": "", "styles": {"neon": "x"}}
+        self.assertIsNone(cig._resolve_style_name(
+            doc, style_arg=None, no_style=False))
+
+    def test_unknown_style_arg_raises(self):
+        with self.assertRaises(SystemExit):
+            cig._resolve_style_name(self.DOC, style_arg="nope", no_style=False)
+
+
 class BuildWebText(unittest.TestCase):
     def test_plain_has_no_codex_tool_wording(self):
         t = cig._build_web_text("a red apple", "auto")

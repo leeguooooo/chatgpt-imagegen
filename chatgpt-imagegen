@@ -1920,6 +1920,30 @@ def _load_styles() -> dict:
     return doc
 
 
+def _die_unknown_style(name: str, styles: dict) -> None:
+    avail = ", ".join(sorted(styles)) or "(none)"
+    raise SystemExit(f"error: unknown style {name!r}. available: {avail}")
+
+
+def _resolve_style_name(doc: dict, *, style_arg: str | None,
+                        no_style: bool) -> str | None:
+    """Pick the style NAME to apply (or None). Order:
+    1. --no-style       → None
+    2. --style NAME     → NAME (error if unknown)
+    3. active default   → it
+    4. otherwise        → None
+    """
+    if no_style:
+        return None
+    styles = doc.get("styles", {})
+    name = style_arg or (doc.get("default") or "")
+    if not name:
+        return None
+    if name not in styles:
+        _die_unknown_style(name, styles)
+    return name
+
+
 # ---------- main ----------
 
 def main() -> int:
