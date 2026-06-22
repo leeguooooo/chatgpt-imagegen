@@ -8,6 +8,8 @@
 
 A tiny, zero-dependency Python CLI (and AI-agent skill) — one file, stdlib only — that generates images with your ChatGPT account, on the command line and for any AI agent.
 
+> 📖 **Deep dive:** [Let Claude Code draw the image itself — the design and principles behind chatgpt-imagegen](https://blog.leeguoo.com/en/posts/chatgpt-imagegen/)
+
 > **✨ Works on a free ChatGPT account too.** The default `web` backend just drives the normal ChatGPT web chat, where **even free-tier users get image generation** — so no paid plan, no API key, and no Codex required (subject to the free tier's daily image limit). Paid plans simply get higher limits.
 
 ```bash
