@@ -63,7 +63,9 @@ host is already an LLM and can rewrite prompts itself; it just needs to know how
 
 ### A. Frontmatter `description` — add a proactive trigger clause
 
-Append to the existing `description` (after the current "Use when… Do not use when…"):
+Append to the **end of the frontmatter `description:` YAML string** (after its current
+final clause "…or extending an established repo icon system."). The `description` is one
+dense inline paragraph in the YAML front matter — not the body's "When to use" H2:
 
 > *Also use **proactively**: when authoring a document, blog post, technical proposal,
 > design doc, README, or other long-form explanatory content, propose illustrations for
