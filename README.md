@@ -75,7 +75,10 @@ Common options — full list with `chatgpt-imagegen --help`:
 | `-i`, `--ref PATH_OR_URL` | — | [image-to-image](#image-to-image): edit a reference (repeatable) |
 | `--style NAME` | — | apply a saved [style](#styles) preset |
 | `--profile` | `auto` | *(web)* which Chrome profile to drive (`auto` / `relay` / a name) |
+| `--open` | off | open the saved image in your default viewer |
 | `--quiet` | off | print **only** the saved path (for pipelines) |
+
+Subcommands: `chatgpt-imagegen doctor` (check which backend is ready) · `chatgpt-imagegen style <verb>` (manage [style](#styles) presets).
 
 ```bash
 chatgpt-imagegen "logo for a coffee shop, vector style" -o brand/logo.png --size 1024x1024
@@ -118,7 +121,7 @@ The `web` backend reaches a browser two ways, and both can miss even when you're
 - **relay** (your *already-open* Chrome) needs the **ab-connect browser extension** connected — a normally-launched Chrome has no debug port, so without it `chrome-use` can't see your tab.
 - **profile launch** copies a logged-in profile and starts its own window — which can fail on its own (profile copy, Chrome not found, a rate-limit).
 
-From v0.11.1 the error prints the *actual* `chrome-use` reason per attempt and whether the relay is connected. Fix any one:
+Run **`chatgpt-imagegen doctor`** first — it reports which backend is ready (codex token, chrome-use version, relay, logged-in profiles) and which one `auto` would pick. From v0.11.1 the error itself also prints the *actual* `chrome-use` reason per attempt and whether the relay is connected. Fix any one:
 
 1. **Connect the relay** (best — drives your open tab, no Codex-usage): `chrome-use extension install`, load the ab-connect extension (`chrome://extensions` → Developer mode → Load unpacked), restart Chrome. Verify with `chrome-use daemon status --json` → `"relay": true`.
 2. **Fully quit Chrome, then rerun** — `chrome-use` then launches the logged-in profile itself.

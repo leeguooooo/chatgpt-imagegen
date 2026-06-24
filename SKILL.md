@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.11.0"
+version: "0.12.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system. Also use proactively: when authoring a document, blog post, technical proposal, design doc, README, or other long-form explanatory content, propose illustrations for the key concepts and generate them as background tasks — don't wait to be asked for an image."
 ---
 
@@ -165,6 +165,8 @@ A vague prompt yields a useless figure. Make the prompt describe the figure's **
 
 ## Error handling
 
+**First step for any "which backend / why isn't web working" failure:** run `chatgpt-imagegen doctor`. It reports, read-only, whether each backend is set up (codex token; chrome-use installed + version; relay connected; logged-in Chrome profiles) and **which one `auto` would pick** — turning a vague "no logged-in browser" into a precise checklist.
+
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `~/.codex/auth.json not found` | Codex CLI never signed in | Tell user to run `npm i -g @openai/codex && codex login` |
@@ -197,6 +199,19 @@ A vague prompt yields a useless figure. Make the prompt describe the figure's **
 - Auto-refreshes the OAuth token on 401/403 via `https://auth.openai.com/oauth/token` (`client_id=app_EMoamEEZ73f0CkXaXp7hrann`); the refreshed token is persisted back to `auth.json`.
 
 Why the web surface is reachable only through a real browser: the consumer `backend-api/*` paths are gated by three layers — Cloudflare's edge check, a sentinel proof-of-work (`sentinel/chat-requirements` + an in-page `sentinel/sdk.js` that computes the token), and a **Cloudflare Turnstile** token. Tested empirically: a bare bearer-token request from a residential IP **passes** the Cloudflare edge and the PoW (CF is IP-reputation-based; the PoW is hashcash-style and replicable offline) — the actual wall is **Turnstile**, an interactive token a headless client can't forge. And "borrow a browser only for the Turnstile token, then go headless" is self-defeating: the token is single-use and short-lived, so you'd open a browser every request anyway. That's why the web backend drives a genuine logged-in browser; the only true no-browser path is the `codex` backend (which bills Codex-usage).
+
+## Reporting issues — you are the feedback channel
+
+This tool is used mostly *through other people's agents*, so **maintainers rarely see failures directly — the agent running it is the main way bugs surface.** When you hit something that looks like a tool bug, help get it reported instead of silently working around it.
+
+- **What's worth reporting:** a crash/traceback, a backend that *should* work but doesn't, wrong or garbled output, a misleading/wrong error message, a `web`/`chrome-use` failure that `chatgpt-imagegen doctor` says should be fine, or behavior that contradicts this SKILL.
+- **What's NOT a bug (handle, don't file):** the user simply isn't logged in or hasn't installed a backend (setup — point them at `doctor` + the install steps), or a deliberate content refusal by the model.
+- **How:** offer to file it — or hand the user a ready-to-paste report — at **https://github.com/leeguooooo/chatgpt-imagegen/issues**. Search open issues first to avoid duplicates. Include:
+  - the exact command you ran,
+  - `chatgpt-imagegen -V` (version),
+  - the full error text / unexpected output,
+  - the output of `chatgpt-imagegen doctor`.
+- A 30-second issue with a repro is worth far more than a quiet workaround — it's how this tool gets fixed.
 
 ## Related
 

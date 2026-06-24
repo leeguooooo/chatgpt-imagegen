@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.11.2"
+__version__ = "0.12.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -639,7 +639,7 @@ def _post_for_image(
 
     def emit(msg: str) -> None:
         if progress:
-            print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
+            print(_fmt_progress(time.monotonic() - start, msg), file=sys.stderr)
 
     try:
         for evt in _stream(CODEX_BACKEND, headers, payload, deadline, stall_timeout):
@@ -747,6 +747,64 @@ def _version_tuple(v: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums[:3]) or (0,)
 
 
+# ---------- terminal output (color, TTY-aware) ----------
+# Color is only ever applied to the stderr progress timeline and the `doctor`
+# report — stdout stays plain (it carries exactly the saved path, for `$(...)`).
+
+_WARN_WORDS = ("warning", "unavailable", "could not", "couldn't", "failed",
+               "stall", "not connected")
+
+
+def _use_color(stream=None) -> bool:
+    """True if we should emit ANSI color to ``stream`` (default stderr).
+
+    Only when it's a real TTY and color isn't disabled — honors NO_COLOR
+    (https://no-color.org), CHATGPT_IMAGEGEN_NO_COLOR, and TERM=dumb. So piping
+    or redirecting (e.g. `2>log`) yields clean plain text automatically."""
+    if stream is None:
+        stream = sys.stderr
+    if os.environ.get("NO_COLOR") or os.environ.get("CHATGPT_IMAGEGEN_NO_COLOR"):
+        return False
+    if (os.environ.get("TERM") or "").lower() == "dumb":
+        return False
+    try:
+        return bool(stream.isatty())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _paint(code: str, s: str, *, stream=None) -> str:
+    """Wrap ``s`` in ANSI SGR ``code`` when color is on for ``stream``, else
+    return it unchanged."""
+    return f"\033[{code}m{s}\033[0m" if _use_color(stream) else s
+
+
+def _dim(s: str, **kw) -> str: return _paint("2", s, **kw)
+def _red(s: str, **kw) -> str: return _paint("31", s, **kw)
+def _green(s: str, **kw) -> str: return _paint("32", s, **kw)
+def _yellow(s: str, **kw) -> str: return _paint("33", s, **kw)
+
+
+def _fmt_progress(elapsed: float, msg: str) -> str:
+    """One stderr progress line: a dimmed `[  N.Ns]` timestamp + message, with
+    warning-ish messages tinted yellow. Plain when color is off."""
+    line = f"{_dim(f'[{elapsed:6.1f}s]')} "
+    low = msg.lower()
+    return line + (_yellow(msg) if any(w in low for w in _WARN_WORDS) else msg)
+
+
+def _chrome_use_version(ab: str) -> str | None:
+    """chrome-use's dotted version (e.g. '1.5.28'), or None if unreadable.
+    Shared by the old-version warning and `doctor`."""
+    try:
+        out = subprocess.run([ab, "--version"], capture_output=True, text=True,
+                             timeout=10)
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r"\d+\.\d+\.\d+", (out.stdout or out.stderr or "").strip())
+    return m.group(0) if m else None
+
+
 def _warn_if_chrome_use_old(ab: str, emit) -> None:
     """Soft-warn (never block) if chrome-use is below AB_MIN_VERSION.
 
@@ -754,18 +812,10 @@ def _warn_if_chrome_use_old(ab: str, emit) -> None:
     need a recent chrome-use; an old binary fails them with an opaque exit code.
     Best-effort: if `--version` can't be read or parsed, stay quiet.
     """
-    try:
-        out = subprocess.run([ab, "--version"], capture_output=True, text=True,
-                             timeout=10)
-    except Exception:  # noqa: BLE001
-        return
-    text = (out.stdout or out.stderr or "").strip()
-    m = re.search(r"\d+\.\d+\.\d+", text)
-    if not m:
-        return
-    if _version_tuple(m.group(0)) < _version_tuple(AB_MIN_VERSION):
+    v = _chrome_use_version(ab)
+    if v and _version_tuple(v) < _version_tuple(AB_MIN_VERSION):
         emit(
-            f"warning: chrome-use {m.group(0)} is older than {AB_MIN_VERSION}; "
+            f"warning: chrome-use {v} is older than {AB_MIN_VERSION}; "
             f"image-to-image / model-switch may fail. Update with the installer "
             f"at github.com/leeguooooo/chrome-use."
         )
@@ -1401,7 +1451,7 @@ def run_web(
 
     def emit(msg: str) -> None:
         if progress:
-            print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
+            print(_fmt_progress(time.monotonic() - start, msg), file=sys.stderr)
 
     def remaining() -> float:
         return max(2.0, deadline - time.monotonic())
@@ -1875,7 +1925,7 @@ def _dispatch(
     """
     def note(msg: str) -> None:
         if progress:
-            print(f"[{time.monotonic() - start:6.1f}s] {msg}", file=sys.stderr)
+            print(_fmt_progress(time.monotonic() - start, msg), file=sys.stderr)
 
     refs = getattr(args, "ref", None)
     # Image-to-image (refs) is now supported on BOTH backends: web attaches the
@@ -2145,13 +2195,137 @@ def _style_command(argv: list[str]) -> int:
     return 0
 
 
+# ---------- doctor (preflight backend check) ----------
+
+def _web_ready(chrome_use_installed: bool, relay: bool, n_profiles: int) -> bool:
+    """The web backend can run if chrome-use is installed AND there's a logged-in
+    browser to reach — the connected relay (your open Chrome) or at least one
+    offline-detected logged-in profile we can launch."""
+    return chrome_use_installed and (relay or n_profiles > 0)
+
+
+def _auto_backend_pick(web_ready: bool, codex_ready: bool) -> str:
+    """Which backend `--backend auto` would use, given each one's readiness."""
+    if web_ready:
+        return "web"
+    if codex_ready:
+        return "codex"
+    return "neither"
+
+
+_AB_INSTALL_ONELINE = (
+    "not installed — curl -fsSL https://raw.githubusercontent.com/leeguooooo/"
+    "chrome-use/main/install.sh | sh"
+)
+
+
+def _doctor_command(argv: list[str]) -> int:
+    """`chatgpt-imagegen doctor` — preflight check of both backends.
+
+    Reports whether each backend is set up and which one `auto` would pick, so a
+    "no logged-in browser" / "no token" failure is diagnosable BEFORE a real run
+    (issue #15). Read-only; exits 0 if at least one backend is ready, else 1."""
+    color = _use_color(sys.stdout)
+    sym = {
+        "ok":   _green("✓") if color else "[ok]  ",
+        "warn": _yellow("⚠") if color else "[warn]",
+        "fail": _red("✗") if color else "[fail]",
+    }
+
+    def line(status: str, label: str, detail: str) -> None:
+        print(f"  {sym[status]}  {label:<11}{detail}")
+
+    print("chatgpt-imagegen doctor\n")
+
+    pv = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    ok_py = sys.version_info >= (3, 10)
+    line("ok" if ok_py else "fail", "python", pv + ("" if ok_py else "  (need 3.10+)"))
+
+    codex_ready = _codex_token_present()
+    line("ok" if codex_ready else "fail", "codex",
+         "OAuth token present (~/.codex/auth.json)" if codex_ready
+         else "no token — run `codex login`")
+
+    print("\n  web backend:")
+    ab = _find_agent_browser()
+    relay = False
+    profiles: list[str] = []
+    if ab is None:
+        line("fail", "chrome-use", _AB_INSTALL_ONELINE)
+    else:
+        v = _chrome_use_version(ab)
+        if v and _version_tuple(v) < _version_tuple(AB_MIN_VERSION):
+            line("warn", "chrome-use",
+                 f"{v} < {AB_MIN_VERSION} — update it (img2img/model-switch may fail)")
+        else:
+            line("ok", "chrome-use", v or "installed")
+        relay = _relay_connected(ab)
+        line("ok" if relay else "fail", "relay",
+             "connected (drives your open Chrome)" if relay
+             else "not connected — load the ab-connect extension, restart Chrome")
+        profiles = _detect_logged_in_profiles()
+        if profiles:
+            shown = ", ".join(profiles[:4]) + ("…" if len(profiles) > 4 else "")
+            line("ok", "profiles", f"{len(profiles)} logged-in: {shown}")
+        else:
+            line("fail", "profiles", "none detected — sign in to chatgpt.com")
+
+    web_ready = _web_ready(ab is not None, relay, len(profiles))
+    pick = _auto_backend_pick(web_ready, codex_ready)
+    arrow = _dim("→", stream=sys.stdout) if color else "→"
+    print()
+    if pick == "neither":
+        print(f"  {arrow} auto: no backend ready — set up one of the above.\n")
+        return 1
+    note = "spares Codex-usage" if pick == "web" else "bills Codex-usage"
+    print(f"  {arrow} auto would use: {pick}  ({note})\n")
+    return 0
+
+
+def _open_file(path: Path, progress: bool) -> None:
+    """Best-effort: open the saved image in the OS default viewer (`--open`).
+    Never fails the run — a failure to launch the viewer only warns."""
+    try:
+        if sys.platform == "darwin":
+            opener: list[str] = ["open", str(path)]
+        elif sys.platform.startswith("win"):
+            os.startfile(str(path))  # type: ignore[attr-defined]  # noqa: PLW1510
+            return
+        else:
+            opener = ["xdg-open", str(path)]
+        subprocess.Popen(opener, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:  # noqa: BLE001
+        if progress:
+            print(f"warning: could not open {path}: {e}", file=sys.stderr)
+
+
 # ---------- main ----------
+
+_HELP_EPILOG = """\
+examples:
+  chatgpt-imagegen "a watercolor cat" -o cat.png
+  chatgpt-imagegen "coffee shop logo, vector style" -o logo.png --size 1024x1024
+  chatgpt-imagegen "restyle this, golden hour" -i photo.jpg -o out.png   # image-to-image
+  chatgpt-imagegen "a settings icon" --style doodle --open
+  OUT=$(chatgpt-imagegen "icon" --quiet)                                 # capture the path
+
+subcommands:
+  chatgpt-imagegen doctor          check which backend is ready (and which auto picks)
+  chatgpt-imagegen style <verb>    manage reusable prompt-style presets
+
+docs: https://github.com/leeguooooo/chatgpt-imagegen
+"""
+
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "style":
         return _style_command(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "doctor":
+        return _doctor_command(sys.argv[2:])
     parser = argparse.ArgumentParser(
-        description="Generate an image with your ChatGPT subscription (no API key)."
+        description="Generate an image with your ChatGPT subscription (no API key).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=_HELP_EPILOG,
     )
     parser.add_argument(
         "-V", "--version", action="version",
@@ -2273,6 +2447,13 @@ def main() -> int:
         action="store_true",
         help="Suppress the stderr progress timeline (errors are still shown).",
     )
+    parser.add_argument(
+        "--open",
+        dest="open_after",
+        action="store_true",
+        help="Open the saved image in the OS default viewer after generating "
+             "(macOS `open`, Linux `xdg-open`, Windows default). Best-effort.",
+    )
     args = parser.parse_args()
     _styles_doc = _load_styles()
     _style_name = _resolve_style_name(
@@ -2285,14 +2466,12 @@ def main() -> int:
 
     if progress:
         prompt_preview = f"{args.prompt[:60]}{'…' if len(args.prompt) > 60 else ''}"
-        print(
-            f"[   0.0s] requesting image  (backend={args.backend} size={args.size} "
-            f"format={args.format} timeout={args.timeout}s)",
-            file=sys.stderr,
-        )
-        print(f"           prompt: {prompt_preview}", file=sys.stderr)
+        meta_bit = _dim(f"(backend={args.backend} size={args.size} "
+                        f"format={args.format} timeout={args.timeout}s)")
+        print(_fmt_progress(0.0, f"requesting image  {meta_bit}"), file=sys.stderr)
+        print(_dim(f"           prompt: {prompt_preview}"), file=sys.stderr)
         if _style_name:
-            print(f"           style: {_style_name}", file=sys.stderr)
+            print(_dim(f"           style: {_style_name}"), file=sys.stderr)
 
     image_bytes, meta = _dispatch(args, progress, stall_timeout, start)
 
@@ -2306,10 +2485,15 @@ def main() -> int:
         size_info = f"  size={meta.get('size')}" if meta.get("size") else ""
         quality_info = f"  quality={meta.get('quality')}" if meta.get("quality") else ""
         print(
-            f"[{time.monotonic() - start:6.1f}s] saved → {out_path}  "
-            f"({len(image_bytes):,} bytes){size_info}{quality_info}",
+            _fmt_progress(
+                time.monotonic() - start,
+                _green(f"✓ saved → {out_path}")
+                + _dim(f"  ({len(image_bytes):,} bytes){size_info}{quality_info}"),
+            ),
             file=sys.stderr,
         )
+    if getattr(args, "open_after", False):
+        _open_file(out_path, progress)
     # stdout is always exactly the saved path, one line — safe for `$(...)` capture.
     print(out_path)
     return 0

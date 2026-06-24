@@ -75,7 +75,10 @@ chatgpt-imagegen "<prompt>" [options]
 | `-i`, `--ref PATH_OR_URL` | — | [图生图](#图生图):编辑一张参考图(可重复) |
 | `--style NAME` | — | 套用保存好的[风格](#风格)预设 |
 | `--profile` | `auto` | *(web)* 驱动哪个 Chrome profile(`auto` / `relay` / profile 名) |
+| `--open` | 关 | 出图后用默认看图器打开 |
 | `--quiet` | 关 | stdout **只**打印保存路径(适合管道) |
+
+子命令:`chatgpt-imagegen doctor`(看哪个后端就绪)· `chatgpt-imagegen style <verb>`(管理[风格](#风格)预设)。
 
 ```bash
 chatgpt-imagegen "logo for a coffee shop, vector style" -o brand/logo.png --size 1024x1024
@@ -118,7 +121,7 @@ chatgpt-imagegen "a photorealistic forest" --no-style      # 单次跳过默认
 - **relay**(复用你**已经开着**的 Chrome)需要连上 **ab-connect 浏览器扩展** —— 普通启动的 Chrome 没调试端口,没扩展 `chrome-use` 就看不到你的标签页。
 - **profile 启动**会把已登录的 profile 拷一份再起一个窗口 —— 这步也可能自己失败(profile 拷贝、找不到 Chrome、被限流)。
 
-从 v0.11.1 起,报错会逐个候选打印 `chrome-use` 的**真实原因**,并显示 relay 是否连上。三选一:
+先跑 **`chatgpt-imagegen doctor`** —— 它会报清楚哪个后端就绪(codex token、chrome-use 版本、relay、已登录 profile)以及 `auto` 会选哪个。另外从 v0.11.1 起,报错本身也会逐个候选打印 `chrome-use` 的**真实原因**并显示 relay 是否连上。三选一:
 
 1. **连上 relay**(推荐 —— 复用你开着的标签页,不花 Codex 用量):`chrome-use extension install`,加载 ab-connect 扩展(`chrome://extensions` → 开发者模式 → 加载已解压),重启 Chrome。用 `chrome-use daemon status --json` 验证 `"relay": true`。
 2. **彻底退出 Chrome 再跑** —— `chrome-use` 会自己启动那个已登录的 profile。

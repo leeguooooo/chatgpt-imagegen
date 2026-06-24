@@ -421,5 +421,76 @@ class RelayConnected(unittest.TestCase):
             self.assertFalse(cig._relay_connected("chrome-use"))
 
 
+class DoctorDecisions(unittest.TestCase):
+    def test_web_ready(self):
+        self.assertTrue(cig._web_ready(True, True, 0))    # relay alone
+        self.assertTrue(cig._web_ready(True, False, 2))   # profiles alone
+        self.assertFalse(cig._web_ready(True, False, 0))  # installed but nothing to reach
+        self.assertFalse(cig._web_ready(False, True, 3))  # not installed
+
+    def test_auto_backend_pick(self):
+        self.assertEqual(cig._auto_backend_pick(True, False), "web")
+        self.assertEqual(cig._auto_backend_pick(True, True), "web")    # web preferred
+        self.assertEqual(cig._auto_backend_pick(False, True), "codex")
+        self.assertEqual(cig._auto_backend_pick(False, False), "neither")
+
+
+class Color(unittest.TestCase):
+    class _Stream:
+        def __init__(self, tty): self._tty = tty
+        def isatty(self): return self._tty
+
+    @contextmanager
+    def _env(self, **kv):
+        prev = {k: os.environ.get(k) for k in kv}
+        for k, v in kv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        try:
+            yield
+        finally:
+            for k, v in prev.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_no_color_env_disables(self):
+        with self._env(NO_COLOR="1", TERM="xterm"):
+            self.assertFalse(cig._use_color(self._Stream(True)))
+
+    def test_non_tty_disables(self):
+        with self._env(NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None, TERM="xterm"):
+            self.assertFalse(cig._use_color(self._Stream(False)))
+
+    def test_tty_enables(self):
+        with self._env(NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None, TERM="xterm"):
+            self.assertTrue(cig._use_color(self._Stream(True)))
+
+    def test_paint_plain_when_off(self):
+        # Color is off for a non-tty stream → string returned untouched.
+        with self._env(NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None):
+            out = cig._paint("31", "hi", stream=self._Stream(False))
+            self.assertEqual(out, "hi")
+
+    def test_fmt_progress_plain_has_timestamp_no_ansi(self):
+        with self._env(NO_COLOR="1"):
+            line = cig._fmt_progress(1.5, "generating")
+            self.assertIn("1.5s]", line)
+            self.assertNotIn("\033[", line)  # no ANSI when color off
+
+    def test_fmt_progress_color_warns(self):
+        # When color is on (forced via patched _use_color), a warn word tints.
+        real = cig._use_color
+        cig._use_color = lambda *a, **k: True
+        try:
+            line = cig._fmt_progress(2.0, "warning: relay not connected")
+            self.assertIn("\033[33m", line)  # yellow
+        finally:
+            cig._use_color = real
+
+
 if __name__ == "__main__":
     unittest.main()
