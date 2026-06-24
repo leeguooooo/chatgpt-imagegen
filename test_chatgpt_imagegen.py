@@ -371,6 +371,22 @@ class WebUnavailableMessage(unittest.TestCase):
         self.assertIn("--backend codex", msg)
 
 
+class AutoCandidates(unittest.TestCase):
+    def test_relay_up_tries_relay_first(self):
+        self.assertEqual(cig._auto_candidates(["Default", "Profile 1"], True),
+                         [None, "Default", "Profile 1"])
+
+    def test_relay_down_tries_profiles_first_relay_last(self):
+        # issue #15 shape: relay off, a login detected → don't waste the first
+        # attempt on the signed-out throwaway relay launch.
+        self.assertEqual(cig._auto_candidates(["Default"], False),
+                         ["Default", None])
+
+    def test_no_profiles_is_just_relay_either_way(self):
+        self.assertEqual(cig._auto_candidates([], True), [None])
+        self.assertEqual(cig._auto_candidates([], False), [None])
+
+
 class RelayConnected(unittest.TestCase):
     @contextmanager
     def _fake_run(self, stdout: str, raises: bool = False):

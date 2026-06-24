@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.11.1"
+__version__ = "0.11.2"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -861,6 +861,19 @@ def _relay_connected(ab: str) -> bool:
         return False
 
 
+def _auto_candidates(profiles: list[str], relay: bool) -> list[str | None]:
+    """Order auto-mode browser candidates by where a usable browser most likely is.
+
+    ``None`` is the relay (your already-open Chrome), which only drives a usable
+    session when the ab-connect extension is connected. When it isn't, the relay
+    candidate just launches a throwaway, signed-OUT temp profile that's bound to
+    fail (and wastes a launch) — so when relay is down, try the offline-detected
+    logged-in ``profiles`` FIRST and keep relay last (it still covers a Chrome
+    manually exposed on a CDP port). Relay up → keep it first (best for
+    anti-detection). Pure; no I/O."""
+    return [None, *profiles] if relay else [*profiles, None]
+
+
 def _web_unavailable_message(
     detected_profiles: list[str], reasons: list[str], relay: bool,
 ) -> str:
@@ -1404,12 +1417,17 @@ def run_web(
     #   <name>     → only that profile.
     # `None` in the list means "relay" (no --profile flag).
     pl = (args.profile or "auto").strip().lower()
+    # Probe the relay once up front: it decides candidate ORDER (below) and the
+    # remedy in the final error (so we don't re-shell `daemon status`).
+    relay = _relay_connected(ab)
     if pl in ("relay", "off", "current"):
         candidates: list[str | None] = [None]
     elif pl == "auto":
-        candidates = [None] + _detect_logged_in_profiles()
+        candidates = _auto_candidates(_detect_logged_in_profiles(), relay)
     else:
         candidates = [args.profile.strip()]
+    if pl == "auto":
+        emit(f"relay {'connected' if relay else 'not connected'}")
 
     def _try_open(prof: str | None) -> str | None:
         """Open a fresh chat and wait for the composer.
@@ -1456,9 +1474,7 @@ def run_web(
         _close()  # always tear down a failed attempt, including the last
     if not opened:
         detected = [c for c in candidates if c is not None]
-        raise WebUnavailable(
-            _web_unavailable_message(detected, reasons, _relay_connected(ab))
-        )
+        raise WebUnavailable(_web_unavailable_message(detected, reasons, relay))
 
     # Everything past here drives the now-open browser. Wrap it so the tab is
     # ALWAYS closed on the way out — success, failure (quota/refusal/timeout), or
