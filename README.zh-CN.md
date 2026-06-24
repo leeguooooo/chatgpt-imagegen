@@ -189,6 +189,29 @@ chatgpt-imagegen "a photorealistic forest" --no-style
 | 图像编辑(`/v1/images/edits`) | ❌ 暂未暴露 | 需要的话开 issue |
 | 速度 | 通常 15–60 秒,大图/细节图偶尔 2–3 分钟 | 全程流式;每个阶段的时间线打到 stderr,能看到它在干活 |
 
+## 排错
+
+**报 `no logged-in ChatGPT browser available`,但我明明登录着**（[#15](https://github.com/leeguooooo/chatgpt-imagegen/issues/15)）
+
+`web` 后端通过 [`chrome-use`](https://github.com/leeguooooo/chrome-use) 驱动 ChatGPT,够到浏览器有两条路 —— 即便你已登录,两条都可能失手:
+
+- **relay**(复用你**已经开着**的 Chrome)只有在装好并连上 **ab-connect 浏览器扩展**时才行。普通启动的 Chrome 没有调试端口,没扩展的话 chrome-use 看不到你的标签页。
+- **profile 启动**会把已登录的 Chrome profile 拷一份再用副本起一个窗口;这一步也可能因别的原因失败(profile 拷贝、找不到 Chrome、被限流)。
+
+从 v0.11.1 起,报错会逐个候选打印 chrome-use 的**真实原因**,并显示 relay 是否连上,让你看清是哪种情况。三选一:
+
+1. **连上 relay(推荐 —— 复用你开着的标签页,不消耗 Codex-usage):**
+   ```bash
+   chrome-use extension install
+   # 然后在 Chrome 里:chrome://extensions → 打开「开发者模式」→
+   #   加载已解压的扩展 → 选 ab-connect 扩展 → 重启 Chrome
+   ```
+   用 `chrome-use daemon status --json` 验证,应显示 `"relay": true`,然后重跑。
+2. **彻底退出 Chrome 再跑** —— 没有 Chrome 占着 profile,chrome-use 会自己启动那个已登录的 profile。
+3. **`--backend codex`** —— headless 兜底(会消耗你的 Codex-usage 额度)。
+
+用 `--profile "Profile 1"` 指定具体 profile,或 `--profile relay` 强制走「开着的 Chrome」这条路。
+
 ## 并发
 
 两个后端各有独立的跨进程并发上限,因为它们撞的限制不一样:

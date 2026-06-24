@@ -226,6 +226,29 @@ Real output of the exact example commands above — every image in this README i
 | Image edits (`/v1/images/edits`) | ❌ not exposed yet | open an issue if you need this |
 | Speed | typically 15–60 s, occasionally 2–3 min for large/detailed images | streamed end-to-end; a per-phase timeline prints to stderr so you can see it working |
 
+## Troubleshooting
+
+**`no logged-in ChatGPT browser available` — but I *am* signed in** ([#15](https://github.com/leeguooooo/chatgpt-imagegen/issues/15))
+
+The `web` backend drives ChatGPT through [`chrome-use`](https://github.com/leeguooooo/chrome-use), and there are two ways for it to reach a browser — both can miss even when you're logged in:
+
+- **relay** (your *already-open* Chrome) only works if the **ab-connect browser extension** is installed and connected. A normally-launched Chrome exposes no debug port, so without the extension chrome-use can't see your open tab.
+- **profile launch** copies a logged-in Chrome profile and starts its own window with it; this can fail for its own reasons (profile copy, Chrome not found, a rate-limit).
+
+From v0.11.1 the error prints the *actual* chrome-use reason per attempt plus whether the relay is connected, so you can tell which case you're in. Fix any one:
+
+1. **Connect the relay (recommended — drives your open tab, no Codex-usage):**
+   ```bash
+   chrome-use extension install
+   # then in Chrome: chrome://extensions → enable Developer mode →
+   #   Load unpacked → pick the ab-connect extension → restart Chrome
+   ```
+   Verify with `chrome-use daemon status --json` → it should report `"relay": true`. Then rerun.
+2. **Fully quit Chrome, then rerun** — with no Chrome holding the profile, chrome-use launches the logged-in profile itself.
+3. **`--backend codex`** — headless fallback (bills your metered Codex-usage bucket).
+
+Pick a specific profile with `--profile "Profile 1"`, or force the open-Chrome path with `--profile relay`.
+
 ## Concurrency
 
 Each backend has its own cross-process concurrency cap, because they hit different limits:
