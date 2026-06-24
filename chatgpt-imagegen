@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.11.0"
+__version__ = "0.11.1"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -840,6 +840,75 @@ def _detect_logged_in_profiles() -> list[str]:
     return [name for name, _exp in found]
 
 
+def _relay_connected(ab: str) -> bool:
+    """True if chrome-use's ab-connect relay is attached to a live Chrome.
+
+    Reads `chrome-use daemon status --json` → data.relay — instant, no browser
+    launch. The relay is the only way chrome-use can drive an ALREADY-open
+    Chrome (a normally-launched Chrome has no debug port); knowing whether it's
+    connected lets us tell a user with a logged-in-but-unreachable browser the
+    right fix (connect the relay) instead of the misleading "not logged in".
+
+    Best-effort: any error → False, so guidance degrades to generic remedies."""
+    try:
+        out = subprocess.run([ab, "daemon", "status", "--json"],
+                             capture_output=True, text=True, timeout=10)
+        data = json.loads(out.stdout or "{}")
+        return bool(isinstance(data, dict)
+                    and isinstance(data.get("data"), dict)
+                    and data["data"].get("relay"))
+    except Exception:  # noqa: BLE001 — diagnostics only, never fatal
+        return False
+
+
+def _web_unavailable_message(
+    detected_profiles: list[str], reasons: list[str], relay: bool,
+) -> str:
+    """Build the WebUnavailable error after every browser candidate failed.
+
+    Pure (no I/O) so it's unit-testable. ``reasons`` is the per-candidate
+    failure list (each already prefixed with its label); ``detected_profiles``
+    are the offline-detected logged-in Chrome profiles; ``relay`` is whether the
+    ab-connect relay is attached.
+
+    The point is to surface chrome-use's ACTUAL error (which the candidate loop
+    used to swallow) plus a remedy tailored to the real situation, rather than a
+    flat "no logged-in browser" that misreads a logged-in-but-unreachable Chrome
+    as signed-out (issue #15)."""
+    lines = ["no logged-in ChatGPT browser available."]
+    if reasons:
+        lines.append("tried:")
+        lines += [f"  • {r}" for r in reasons]
+    if detected_profiles and not relay:
+        # A login WAS found on disk, but we couldn't drive it and the relay
+        # isn't connected — so chrome-use can't reach the already-open Chrome.
+        prof = detected_profiles[0]
+        lines.append(
+            f"a ChatGPT login was detected in Chrome profile {prof!r}, but it "
+            "couldn't be driven. Fix any one:")
+        lines.append(
+            "  1. connect the relay (best — drives your already-open tab, no "
+            "Codex-usage): run `chrome-use extension install`, load the "
+            "ab-connect extension (chrome://extensions → Developer mode → Load "
+            "unpacked), restart Chrome, then rerun.")
+        lines.append(
+            "  2. fully quit Chrome, then rerun — chrome-use can then launch the "
+            f"logged-in profile {prof!r} itself.")
+        lines.append("  3. use --backend codex (headless; bills Codex-usage).")
+    elif relay:
+        # The relay is up but the relayed Chrome still didn't yield a composer —
+        # most likely that Chrome isn't signed in to chatgpt.com.
+        lines.append(
+            "the relay is connected but the open Chrome isn't usable — sign in "
+            "to chatgpt.com in it, or use --backend codex.")
+    else:
+        lines.append(
+            "no logged-in Chrome profile was detected and the relay isn't "
+            "connected. Sign in to chatgpt.com (and/or set up the chrome-use "
+            "relay), or use --backend codex.")
+    return "\n".join(lines)
+
+
 def _ab(ab: str, *ab_args: str, session: str, timeout: float, profile: str | None = None) -> str:
     """Run one chrome-use subcommand, return stdout. Raises GatewayError on failure.
 
@@ -1342,14 +1411,23 @@ def run_web(
     else:
         candidates = [args.profile.strip()]
 
-    def _try_open(prof: str | None) -> bool:
-        """Open a fresh chat and wait for the composer. True if it appears."""
+    def _try_open(prof: str | None) -> str | None:
+        """Open a fresh chat and wait for the composer.
+
+        Returns None on success, or a short reason string on failure — the
+        chrome-use error verbatim, or "composer never appeared". We surface that
+        reason instead of swallowing it (the old bool dropped chrome-use's
+        actual diagnostic, e.g. "extension not connected …", leaving the user
+        only our generic message — issue #15). WebRateLimited still propagates."""
         try:
             _ab(ab, "open", WEB_NEW_CHAT_URL, session=session,
                 timeout=min(30.0, remaining()), profile=prof)
-        except GatewayError:
-            return False
-        return _wait_composer(ab, session, remaining)
+        except GatewayError as e:
+            return str(e)
+        if _wait_composer(ab, session, remaining):
+            return None
+        return ("composer never appeared (likely a login wall — that Chrome "
+                "isn't signed in to chatgpt.com — or the page was blocked)")
 
     def _close() -> None:
         """Close the session's browser/tab. Best-effort; never raises."""
@@ -1360,23 +1438,26 @@ def run_web(
 
     chosen: str | None = None
     opened = False
+    reasons: list[str] = []  # per-candidate failure, surfaced if all fail
     for prof in candidates:
         label = "current Chrome (relay)" if prof is None else f"profile {prof!r}"
         emit(f"opening ChatGPT via {label}")
         try:
-            if _try_open(prof):
-                chosen, opened = prof, True
-                emit(f"using {label}")
-                break
+            reason = _try_open(prof)
         except WebRateLimited:
             _close()  # account-level block: stop burning 45s per candidate
             raise
+        if reason is None:
+            chosen, opened = prof, True
+            emit(f"using {label}")
+            break
+        emit(f"{label} unavailable: {reason}")
+        reasons.append(f"{label} — {reason}")
         _close()  # always tear down a failed attempt, including the last
     if not opened:
+        detected = [c for c in candidates if c is not None]
         raise WebUnavailable(
-            "no logged-in ChatGPT browser available (tried the open Chrome"
-            + (" and detected profiles" if len(candidates) > 1 else "")
-            + "). Sign in to chatgpt.com, or use --backend codex."
+            _web_unavailable_message(detected, reasons, _relay_connected(ab))
         )
 
     # Everything past here drives the now-open browser. Wrap it so the tab is

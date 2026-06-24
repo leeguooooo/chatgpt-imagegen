@@ -336,5 +336,74 @@ class DownloadRefCap(unittest.TestCase):
                 cig._download_ref_url("https://x/huge.png")
 
 
+class WebUnavailableMessage(unittest.TestCase):
+    """The diagnostic built when every browser candidate fails (issue #15)."""
+
+    def test_includes_per_candidate_reasons(self):
+        msg = cig._web_unavailable_message(
+            detected_profiles=["Default"],
+            reasons=["current Chrome (relay) — extension not connected",
+                     "profile 'Default' — composer never appeared"],
+            relay=False,
+        )
+        # chrome-use's actual errors are surfaced, not swallowed.
+        self.assertIn("extension not connected", msg)
+        self.assertIn("composer never appeared", msg)
+
+    def test_logged_in_profile_but_no_relay_gives_three_remedies(self):
+        # The issue-#15 shape: a login exists on disk, relay isn't connected.
+        msg = cig._web_unavailable_message(["Default"], ["x — y"], relay=False)
+        self.assertIn("'Default'", msg)
+        self.assertIn("connect the relay", msg)
+        self.assertIn("quit Chrome", msg)
+        self.assertIn("--backend codex", msg)
+
+    def test_relay_up_blames_signed_out_chrome(self):
+        msg = cig._web_unavailable_message([], ["relay — composer never appeared"],
+                                           relay=True)
+        self.assertIn("relay is connected", msg)
+        self.assertNotIn("connect the relay", msg)  # already connected
+
+    def test_nothing_detected_no_relay(self):
+        msg = cig._web_unavailable_message([], ["relay — extension not connected"],
+                                           relay=False)
+        self.assertIn("no logged-in Chrome profile was detected", msg)
+        self.assertIn("--backend codex", msg)
+
+
+class RelayConnected(unittest.TestCase):
+    @contextmanager
+    def _fake_run(self, stdout: str, raises: bool = False):
+        import subprocess
+        real = subprocess.run
+
+        def fake(*a, **k):
+            if raises:
+                raise subprocess.TimeoutExpired(cmd="chrome-use", timeout=10)
+            return subprocess.CompletedProcess(a[0], 0, stdout=stdout, stderr="")
+
+        subprocess.run = fake
+        try:
+            yield
+        finally:
+            subprocess.run = real
+
+    def test_relay_true(self):
+        with self._fake_run('{"data":{"relay":true,"sessions":[]},"success":true}'):
+            self.assertTrue(cig._relay_connected("chrome-use"))
+
+    def test_relay_false(self):
+        with self._fake_run('{"data":{"relay":false},"success":true}'):
+            self.assertFalse(cig._relay_connected("chrome-use"))
+
+    def test_garbage_output_is_false(self):
+        with self._fake_run("not json"):
+            self.assertFalse(cig._relay_connected("chrome-use"))
+
+    def test_subprocess_error_is_false(self):
+        with self._fake_run("", raises=True):
+            self.assertFalse(cig._relay_connected("chrome-use"))
+
+
 if __name__ == "__main__":
     unittest.main()
