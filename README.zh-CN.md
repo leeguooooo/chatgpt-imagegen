@@ -21,13 +21,18 @@ chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
 
 需要 Python 3.10+ 和一份 ChatGPT 订阅(免费档也行)。配好至少一个后端 —— `auto` 会用配好的那个。
 
-**给 AI agent 用(推荐)** —— 把 skill + CLI 放进 Claude Code、Codex、Cursor 等:
+**给 AI agent 用(推荐)** —— 把 skill 放进 Claude Code、Codex、Cursor 等:
 
 ```bash
 npx skills add leeguooooo/chatgpt-imagegen -g
 ```
 
 然后直接说:*"画一张 …"* / *"generate a hero banner for the README"*。
+
+> 注意:`skills add` 只会复制 `SKILL.md`,不会带上 `chatgpt-imagegen` 脚本本体。没关系 —— skill 会
+> **自愈**:首次使用时 agent 会用一条 `curl` 把这个单文件 CLI 拉到 `SKILL.md` 旁边(纯标准库 Python、
+> 零依赖),你只需要 `PATH` 上有 `python3` ≥ 3.10。想自己预先放好:
+> `curl -fsSL https://raw.githubusercontent.com/leeguooooo/chatgpt-imagegen/main/chatgpt-imagegen -o ~/.agents/skills/chatgpt-imagegen/chatgpt-imagegen && chmod +x $_`。
 
 **独立 CLI** —— 不用 `pip`、不用虚拟环境、不用守护进程:
 

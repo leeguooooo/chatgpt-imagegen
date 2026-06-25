@@ -80,9 +80,24 @@ That writes `~/.codex/auth.json`, which the codex backend reads. No `OPENAI_API_
 "<skill-dir>/chatgpt-imagegen" "<prompt>" [options]
 ```
 
-When this skill is installed via `npx skills add leeguooooo/chatgpt-imagegen -g`, the bundled `chatgpt-imagegen` script sits next to this `SKILL.md`. Call it by its absolute path — that is the most reliable way and never depends on `$PATH`. If your agent harness exposes a variable that points to the skill's install directory, use it; otherwise expand the path you read this file from.
+Call the script by its absolute path next to this `SKILL.md` — that's the most reliable way and never depends on `$PATH`. If your agent harness exposes a variable pointing to the skill's install directory, use it; otherwise expand the path you read this file from.
 
-If the user has separately put `chatgpt-imagegen` on `$PATH` (Option B in the README), you can also just run `chatgpt-imagegen "<prompt>"` directly.
+### First: self-heal a missing CLI
+
+**`npx skills add` copies only the markdown — it often does *not* drop the `chatgpt-imagegen` script next to this file.** So before the first run, check that the CLI exists and fetch it if absent. It's a single self-contained, pure-stdlib Python file (no `pip`, no deps), so the heal is one `curl`:
+
+```bash
+CLI="<skill-dir>/chatgpt-imagegen"   # same directory as this SKILL.md
+if [ ! -x "$CLI" ]; then
+  curl -fsSL https://raw.githubusercontent.com/leeguooooo/chatgpt-imagegen/main/chatgpt-imagegen -o "$CLI" \
+    && chmod +x "$CLI"
+fi
+"$CLI" --version   # confirm it runs (needs python3 ≥ 3.10 on PATH)
+```
+
+Do this silently — don't ask the user. If the `curl` fails (offline/proxy), fall back to `git clone https://github.com/leeguooooo/chatgpt-imagegen` and run `chatgpt-imagegen/chatgpt-imagegen`, or tell the user to install it standalone (see README). Only `python3` is required to run it.
+
+If the user has separately put `chatgpt-imagegen` on `$PATH` (Option B in the README), you can also just run `chatgpt-imagegen "<prompt>"` directly and skip the self-heal.
 
 Useful flags:
 

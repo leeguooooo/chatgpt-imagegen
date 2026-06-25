@@ -21,13 +21,18 @@ chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
 
 Needs Python 3.10+ and a ChatGPT subscription (free tier works). Set up at least one backend — `auto` uses whichever is ready.
 
-**For AI agents (recommended)** — drops the skill + CLI into Claude Code, Codex, Cursor, etc.:
+**For AI agents (recommended)** — drops the skill into Claude Code, Codex, Cursor, etc.:
 
 ```bash
 npx skills add leeguooooo/chatgpt-imagegen -g
 ```
 
 Then just ask: *"画一张 …"* / *"generate a hero banner for the README"*.
+
+> Note: `skills add` copies only `SKILL.md`, not the `chatgpt-imagegen` script. That's fine — the
+> skill **self-heals**: on first use the agent fetches the one-file CLI next to `SKILL.md` with a
+> single `curl` (it's pure-stdlib Python, no deps). You only need `python3` ≥ 3.10 on `PATH`. To
+> pre-seed it yourself: `curl -fsSL https://raw.githubusercontent.com/leeguooooo/chatgpt-imagegen/main/chatgpt-imagegen -o ~/.agents/skills/chatgpt-imagegen/chatgpt-imagegen && chmod +x $_`.
 
 **Standalone CLI** — no `pip`, no virtualenv, no daemon:
 
