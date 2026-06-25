@@ -52,7 +52,16 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
+
+# What's-new, newest first — one terse line per release. The update reminder
+# surfaces these so a user learns WHAT changed, not just that a newer version
+# exists. Kept as flat, easy-to-regex comments near the top so the remote copy
+# can be parsed from the same 8KB prefix the reminder already reads — no extra
+# file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.14.0]: 更新提示现在会列出每个新版本改了什么,而不只是「有新版」
+# WHATSNEW[0.13.0]: 新增每天一次的新版本提示(doctor 显示版本差异);可用 CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1 关闭
+# WHATSNEW[0.12.0]: CLI 缺失时自愈(curl 拉回);doctor 自检;进度上色;--open 出图后打开
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -2045,12 +2054,20 @@ def _update_cache_path() -> Path:
     return root / "chatgpt-imagegen" / "update-check.json"
 
 
-def _fetch_latest_version(timeout: float = 4.0) -> str | None:
-    """Best-effort: read `__version__` from the script on main. None on any error.
+def _parse_whatsnew(text: str) -> dict:
+    """Map version → one-line note from `# WHATSNEW[ver]: note` comment lines."""
+    out: dict[str, str] = {}
+    for ver, note in re.findall(r"WHATSNEW\[([\d.]+)\]:\s*(.+)", text):
+        out.setdefault(ver, note.strip())
+    return out
 
-    Reads only a small prefix (the version sits near the top), so it never pulls
-    the whole file. Any network/parse failure stays silent — this is a nicety,
-    never a gate."""
+
+def _fetch_latest_info(timeout: float = 4.0):
+    """Best-effort `(latest_version, {ver: note})` from the script on main.
+
+    Reads only an 8KB prefix (both `__version__` and the WHATSNEW lines live at
+    the top), so it never pulls the whole file. Any network/parse failure returns
+    `(None, {})` — this is a nicety, never a gate."""
     try:
         req = urllib.request.Request(
             UPDATE_CHECK_URL,
@@ -2059,17 +2076,41 @@ def _fetch_latest_version(timeout: float = 4.0) -> str | None:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             head = r.read(8192).decode("utf-8", "replace")
     except Exception:  # noqa: BLE001
-        return None
+        return None, {}
     m = re.search(r'__version__\s*=\s*"([\d.]+)"', head)
-    return m.group(1) if m else None
+    return (m.group(1) if m else None), _parse_whatsnew(head)
+
+
+def _changes_since(notes: dict, base: str = __version__) -> list[tuple[str, str]]:
+    """WHATSNEW entries strictly newer than ``base``, newest first."""
+    cur = _version_tuple(base)
+    vers = sorted((v for v in notes if _version_tuple(v) > cur),
+                  key=_version_tuple, reverse=True)
+    return [(v, notes[v]) for v in vers]
+
+
+def _format_update_notice(latest: str, notes: dict, max_lines: int = 3) -> str:
+    """One header line + up to ``max_lines`` `• ver: what-changed` lines."""
+    head = (f"提示:chatgpt-imagegen {latest} 可用(当前 {__version__})。"
+            f"更新:skills update chatgpt-imagegen")
+    changes = _changes_since(notes)
+    lines = [head]
+    for ver, note in changes[:max_lines]:
+        lines.append(f"  • {ver}:{note}")
+    extra = len(changes) - max_lines
+    if extra > 0:
+        lines.append(f"  • 另有 {extra} 项更新")
+    return "\n".join(lines)
 
 
 def _maybe_notify_update(emit) -> None:
-    """Once a day, soft-notify via ``emit`` if a newer version is on main.
+    """Once a day, soft-notify via ``emit`` if a newer version is on main —
+    including a terse list of what changed since the installed version.
 
-    Caches the result (and the check timestamp) under the config dir so normal
-    runs do no network at all between daily checks. Fully skipped when
-    CHATGPT_IMAGEGEN_NO_UPDATE_CHECK is set. Never raises."""
+    Caches the result (timestamp, latest version, and the what's-new notes)
+    under the config dir so normal runs do no network at all between daily
+    checks. Fully skipped when CHATGPT_IMAGEGEN_NO_UPDATE_CHECK is set. Never
+    raises."""
     if os.environ.get("CHATGPT_IMAGEGEN_NO_UPDATE_CHECK"):
         return
     cache = _update_cache_path()
@@ -2078,22 +2119,23 @@ def _maybe_notify_update(emit) -> None:
         data = json.loads(cache.read_text(encoding="utf-8"))
         last = float(data.get("checked_at", 0))
         latest = data.get("latest")
+        notes = data.get("notes") or {}
     except Exception:  # noqa: BLE001
-        last, latest = 0.0, None
+        last, latest, notes = 0.0, None, {}
 
     if now - last >= UPDATE_CHECK_INTERVAL:
-        fetched = _fetch_latest_version()
-        latest = fetched or latest  # keep last-known if the fetch failed
+        fetched_latest, fetched_notes = _fetch_latest_info()
+        if fetched_latest:                      # keep last-known if the fetch failed
+            latest, notes = fetched_latest, fetched_notes
         try:
             cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(
-                json.dumps({"checked_at": now, "latest": latest}), encoding="utf-8")
+            cache.write_text(json.dumps(
+                {"checked_at": now, "latest": latest, "notes": notes}), encoding="utf-8")
         except Exception:  # noqa: BLE001
             pass
 
     if latest and _version_tuple(latest) > _version_tuple(__version__):
-        emit(f"提示:chatgpt-imagegen {latest} 可用(当前 {__version__})。"
-             f"更新:skills update chatgpt-imagegen")
+        emit(_format_update_notice(latest, notes))
 
 
 def _builtin_styles() -> dict:
@@ -2310,10 +2352,12 @@ def _doctor_command(argv: list[str]) -> int:
     ok_py = sys.version_info >= (3, 10)
     line("ok" if ok_py else "fail", "python", pv + ("" if ok_py else "  (need 3.10+)"))
 
-    latest = _fetch_latest_version()  # always fresh here (no throttle) — explicit check
+    latest, notes = _fetch_latest_info()  # always fresh here (no throttle)
     if latest and _version_tuple(latest) > _version_tuple(__version__):
         line("warn", "version",
              f"{__version__} → {latest} 可用 (skills update chatgpt-imagegen)")
+        for ver, note in _changes_since(notes)[:5]:
+            print(f"               • {ver}:{note}")
     else:
         line("ok", "version", __version__ + (" (latest)" if latest else ""))
 

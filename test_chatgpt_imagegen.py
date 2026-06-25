@@ -85,27 +85,34 @@ class VersionTuple(unittest.TestCase):
 
 
 class UpdateNotify(unittest.TestCase):
-    """The once-a-day self-update reminder: throttle, cache, env-disable, parse."""
+    """The once-a-day self-update reminder: throttle, cache, env-disable, parse,
+    and the what's-new changelog surfaced in the notice."""
 
     @contextmanager
-    def _patched_fetch(self, value, counter=None):
-        orig = cig._fetch_latest_version
+    def _patched_fetch(self, version, notes=None, counter=None):
+        orig = cig._fetch_latest_info
 
         def fake(timeout=4.0):
             if counter is not None:
                 counter["n"] += 1
-            return value
-        cig._fetch_latest_version = fake
+            return version, (notes or {})
+        cig._fetch_latest_info = fake
         try:
             yield
         finally:
-            cig._fetch_latest_version = orig
+            cig._fetch_latest_info = orig
 
     def test_notifies_when_newer(self):
-        with _tmp_xdg(), self._patched_fetch("9.9.9"):
+        with _tmp_xdg(), self._patched_fetch("9.9.9", {"9.9.9": "shiny new thing"}):
             msgs = []
             cig._maybe_notify_update(msgs.append)
             self.assertTrue(msgs and "9.9.9" in msgs[0])
+
+    def test_notice_lists_what_changed(self):
+        with _tmp_xdg(), self._patched_fetch("9.9.9", {"9.9.9": "shiny new thing"}):
+            msgs = []
+            cig._maybe_notify_update(msgs.append)
+            self.assertIn("shiny new thing", msgs[0])
 
     def test_silent_when_same_or_older(self):
         with _tmp_xdg(), self._patched_fetch(cig.__version__):
@@ -116,39 +123,54 @@ class UpdateNotify(unittest.TestCase):
     def test_throttled_no_network_within_interval(self):
         with _tmp_xdg():
             counter = {"n": 0}
-            with self._patched_fetch("9.9.9", counter):
+            with self._patched_fetch("9.9.9", {"9.9.9": "x"}, counter):
                 cig._maybe_notify_update(lambda _m: None)        # first: hits network
                 cig._maybe_notify_update(lambda _m: None)        # second: cached
             self.assertEqual(counter["n"], 1)
 
     def test_uses_cached_latest_when_throttled(self):
         with _tmp_xdg():
-            with self._patched_fetch("9.9.9"):
+            with self._patched_fetch("9.9.9", {"9.9.9": "cached note"}):
                 cig._maybe_notify_update(lambda _m: None)        # populate cache
             # Network would now report an older version, but throttle keeps cached 9.9.9.
-            with self._patched_fetch("0.0.1"):
+            with self._patched_fetch("0.0.1", {"0.0.1": "stale"}):
                 msgs = []
                 cig._maybe_notify_update(msgs.append)
-            self.assertTrue(msgs and "9.9.9" in msgs[0])
+            self.assertTrue(msgs and "9.9.9" in msgs[0] and "cached note" in msgs[0])
 
     def test_env_disable_is_noop(self):
         with _tmp_xdg():
             counter = {"n": 0}
             os.environ["CHATGPT_IMAGEGEN_NO_UPDATE_CHECK"] = "1"
             try:
-                with self._patched_fetch("9.9.9", counter):
+                with self._patched_fetch("9.9.9", {"9.9.9": "x"}, counter):
                     msgs = []
                     cig._maybe_notify_update(msgs.append)
             finally:
                 os.environ.pop("CHATGPT_IMAGEGEN_NO_UPDATE_CHECK", None)
             self.assertEqual((counter["n"], msgs), (0, []))
 
-    def test_version_is_within_fetched_prefix(self):
-        # _fetch_latest_version only reads the first 8KB; __version__ must live there.
+    def test_changes_since_filters_and_orders(self):
+        notes = {"0.1.0": "old", "9.9.0": "mid", "9.9.9": "new"}
+        self.assertEqual(cig._changes_since(notes, base="9.8.0"),
+                         [("9.9.9", "new"), ("9.9.0", "mid")])
+
+    def test_format_notice_caps_lines(self):
+        notes = {f"9.0.{i}": f"change {i}" for i in range(1, 6)}
+        out = cig._format_update_notice("9.0.5", notes, max_lines=3)
+        self.assertEqual(out.count("\n  •"), 4)          # 3 changes + "另有 N 项"
+        self.assertIn("另有 2 项", out)
+
+    def test_parse_whatsnew_from_real_header(self):
+        # Both __version__ and the newest WHATSNEW line must sit in the first 8KB,
+        # since the reminder only reads that prefix of the remote script.
         head = Path(os.path.join(os.path.dirname(__file__),
                                  "chatgpt-imagegen")).read_text()[:8192]
         m = re.search(r'__version__\s*=\s*"([\d.]+)"', head)
         self.assertEqual(m.group(1), cig.__version__)
+        notes = cig._parse_whatsnew(head)
+        self.assertIn(cig.__version__, notes)            # current release is documented
+        self.assertTrue(notes[cig.__version__])
 
 
 class IsUrl(unittest.TestCase):

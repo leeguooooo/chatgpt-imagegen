@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.13.0"
+version: "0.14.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system. Also use proactively: when authoring a document, blog post, technical proposal, design doc, README, or other long-form explanatory content, propose illustrations for the key concepts and generate them as background tasks — don't wait to be asked for an image."
 ---
 
@@ -182,7 +182,15 @@ A vague prompt yields a useless figure. Make the prompt describe the figure's **
 
 **First step for any "which backend / why isn't web working" failure:** run `chatgpt-imagegen doctor`. It reports, read-only, the CLI's own version vs. the latest on `main`, whether each backend is set up (codex token; chrome-use installed + version; relay connected; logged-in Chrome profiles), and **which one `auto` would pick** — turning a vague "no logged-in browser" into a precise checklist.
 
-**Self-update reminder.** `skills` has no auto-update, so the CLI nudges instead: at most once a day it reads its own `__version__` from `main` and, if a newer one exists, prints a single stderr line (`提示:chatgpt-imagegen X.Y.Z 可用 … 更新:skills update chatgpt-imagegen`). It never touches stdout, never blocks a run, and is skipped under `--quiet`/`--no-progress`; `doctor` checks unconditionally. To turn it off entirely, set `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`. When you see the notice, the fix is `skills update chatgpt-imagegen` (or re-run the self-heal `curl`).
+**Self-update reminder.** `skills` has no auto-update, so the CLI nudges instead: at most once a day it reads its own `__version__` (plus a terse per-release changelog) from `main` and, if a newer one exists, prints a short stderr notice that **lists what changed** since your version — so you know *why* to update, not just that you can:
+
+```
+提示:chatgpt-imagegen 0.14.0 可用(当前 0.12.0)。更新:skills update chatgpt-imagegen
+  • 0.14.0:更新提示现在会列出每个新版本改了什么
+  • 0.13.0:新增每天一次的新版本提示…
+```
+
+It never touches stdout, never blocks a run, and is skipped under `--quiet`/`--no-progress`; `doctor` checks unconditionally and prints the same change list. To turn it off entirely, set `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`. When you see the notice, the fix is `skills update chatgpt-imagegen` (or re-run the self-heal `curl`).
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
