@@ -12,6 +12,7 @@ Run:  python3 -m unittest test_chatgpt_imagegen -v
 import importlib.machinery
 import importlib.util
 import os
+import re
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -81,6 +82,73 @@ class VersionTuple(unittest.TestCase):
                                 cig._version_tuple(cig.AB_MIN_VERSION))
         self.assertLess(cig._version_tuple("1.4.0"),
                         cig._version_tuple(cig.AB_MIN_VERSION))
+
+
+class UpdateNotify(unittest.TestCase):
+    """The once-a-day self-update reminder: throttle, cache, env-disable, parse."""
+
+    @contextmanager
+    def _patched_fetch(self, value, counter=None):
+        orig = cig._fetch_latest_version
+
+        def fake(timeout=4.0):
+            if counter is not None:
+                counter["n"] += 1
+            return value
+        cig._fetch_latest_version = fake
+        try:
+            yield
+        finally:
+            cig._fetch_latest_version = orig
+
+    def test_notifies_when_newer(self):
+        with _tmp_xdg(), self._patched_fetch("9.9.9"):
+            msgs = []
+            cig._maybe_notify_update(msgs.append)
+            self.assertTrue(msgs and "9.9.9" in msgs[0])
+
+    def test_silent_when_same_or_older(self):
+        with _tmp_xdg(), self._patched_fetch(cig.__version__):
+            msgs = []
+            cig._maybe_notify_update(msgs.append)
+            self.assertEqual(msgs, [])
+
+    def test_throttled_no_network_within_interval(self):
+        with _tmp_xdg():
+            counter = {"n": 0}
+            with self._patched_fetch("9.9.9", counter):
+                cig._maybe_notify_update(lambda _m: None)        # first: hits network
+                cig._maybe_notify_update(lambda _m: None)        # second: cached
+            self.assertEqual(counter["n"], 1)
+
+    def test_uses_cached_latest_when_throttled(self):
+        with _tmp_xdg():
+            with self._patched_fetch("9.9.9"):
+                cig._maybe_notify_update(lambda _m: None)        # populate cache
+            # Network would now report an older version, but throttle keeps cached 9.9.9.
+            with self._patched_fetch("0.0.1"):
+                msgs = []
+                cig._maybe_notify_update(msgs.append)
+            self.assertTrue(msgs and "9.9.9" in msgs[0])
+
+    def test_env_disable_is_noop(self):
+        with _tmp_xdg():
+            counter = {"n": 0}
+            os.environ["CHATGPT_IMAGEGEN_NO_UPDATE_CHECK"] = "1"
+            try:
+                with self._patched_fetch("9.9.9", counter):
+                    msgs = []
+                    cig._maybe_notify_update(msgs.append)
+            finally:
+                os.environ.pop("CHATGPT_IMAGEGEN_NO_UPDATE_CHECK", None)
+            self.assertEqual((counter["n"], msgs), (0, []))
+
+    def test_version_is_within_fetched_prefix(self):
+        # _fetch_latest_version only reads the first 8KB; __version__ must live there.
+        head = Path(os.path.join(os.path.dirname(__file__),
+                                 "chatgpt-imagegen")).read_text()[:8192]
+        m = re.search(r'__version__\s*=\s*"([\d.]+)"', head)
+        self.assertEqual(m.group(1), cig.__version__)
 
 
 class IsUrl(unittest.TestCase):

@@ -41,6 +41,8 @@ git clone https://github.com/leeguooooo/chatgpt-imagegen
 sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
 ```
 
+**Updating** — `skills` has no auto-update, so the CLI reminds you: once a day it checks `main` and prints a one-line notice if a newer version exists. Run `skills update chatgpt-imagegen` (or re-run the self-heal `curl`) to update; `chatgpt-imagegen doctor` shows your version vs. latest. Silence it with `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`.
+
 **Backends** (need one):
 
 - **`web`** (default, spends no Codex-usage) — drives your logged-in Chrome via [`chrome-use`](https://github.com/leeguooooo/chrome-use):

@@ -52,7 +52,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 CODEX_BACKEND = "https://chatgpt.com/backend-api/codex/responses"
 
@@ -80,6 +80,16 @@ FALLBACK_VERSION = "0.130.0"
 FALLBACK_UA = f"codex_cli_rs/{FALLBACK_VERSION} (Mac OS 26.0.1; arm64) chatgpt-imagegen"
 AUTH_PATH = Path.home() / ".codex" / "auth.json"
 VERSION_PATH = Path.home() / ".codex" / "version.json"
+
+# Self-update reminder. `skills add` has no auto-update and surfaces no "new
+# version" notice, so we do it ourselves: once a day, best-effort, read the
+# script's own `__version__` on main (the single source of truth — no separate
+# VERSION file to drift) and soft-notify if it's newer. Never blocks, never
+# touches stdout, silenced by `--no-progress` or CHATGPT_IMAGEGEN_NO_UPDATE_CHECK.
+UPDATE_CHECK_URL = (
+    "https://raw.githubusercontent.com/leeguooooo/chatgpt-imagegen/main/chatgpt-imagegen"
+)
+UPDATE_CHECK_INTERVAL = 86400  # seconds; at most one network check per day
 
 # Web backend: drive the real, logged-in ChatGPT browser via chrome-use
 # (formerly agent-browser-stealth) so image generation runs on the ChatGPT
@@ -2027,6 +2037,65 @@ def _styles_path() -> Path:
     return root / "chatgpt-imagegen" / "styles.json"
 
 
+# ---------- self-update reminder ----------
+
+def _update_cache_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    root = Path(base) if base else Path.home() / ".config"
+    return root / "chatgpt-imagegen" / "update-check.json"
+
+
+def _fetch_latest_version(timeout: float = 4.0) -> str | None:
+    """Best-effort: read `__version__` from the script on main. None on any error.
+
+    Reads only a small prefix (the version sits near the top), so it never pulls
+    the whole file. Any network/parse failure stays silent — this is a nicety,
+    never a gate."""
+    try:
+        req = urllib.request.Request(
+            UPDATE_CHECK_URL,
+            headers={"User-Agent": f"chatgpt-imagegen/{__version__} update-check"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            head = r.read(8192).decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return None
+    m = re.search(r'__version__\s*=\s*"([\d.]+)"', head)
+    return m.group(1) if m else None
+
+
+def _maybe_notify_update(emit) -> None:
+    """Once a day, soft-notify via ``emit`` if a newer version is on main.
+
+    Caches the result (and the check timestamp) under the config dir so normal
+    runs do no network at all between daily checks. Fully skipped when
+    CHATGPT_IMAGEGEN_NO_UPDATE_CHECK is set. Never raises."""
+    if os.environ.get("CHATGPT_IMAGEGEN_NO_UPDATE_CHECK"):
+        return
+    cache = _update_cache_path()
+    now = time.time()
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        last = float(data.get("checked_at", 0))
+        latest = data.get("latest")
+    except Exception:  # noqa: BLE001
+        last, latest = 0.0, None
+
+    if now - last >= UPDATE_CHECK_INTERVAL:
+        fetched = _fetch_latest_version()
+        latest = fetched or latest  # keep last-known if the fetch failed
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(
+                json.dumps({"checked_at": now, "latest": latest}), encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            pass
+
+    if latest and _version_tuple(latest) > _version_tuple(__version__):
+        emit(f"提示:chatgpt-imagegen {latest} 可用(当前 {__version__})。"
+             f"更新:skills update chatgpt-imagegen")
+
+
 def _builtin_styles() -> dict:
     return dict(_BUILTIN_STYLES)
 
@@ -2240,6 +2309,13 @@ def _doctor_command(argv: list[str]) -> int:
     pv = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
     ok_py = sys.version_info >= (3, 10)
     line("ok" if ok_py else "fail", "python", pv + ("" if ok_py else "  (need 3.10+)"))
+
+    latest = _fetch_latest_version()  # always fresh here (no throttle) — explicit check
+    if latest and _version_tuple(latest) > _version_tuple(__version__):
+        line("warn", "version",
+             f"{__version__} → {latest} 可用 (skills update chatgpt-imagegen)")
+    else:
+        line("ok", "version", __version__ + (" (latest)" if latest else ""))
 
     codex_ready = _codex_token_present()
     line("ok" if codex_ready else "fail", "codex",
@@ -2463,6 +2539,12 @@ def main() -> int:
     progress = not args.no_progress
     stall_timeout = float(min(args.stall_timeout, args.timeout))
     start = time.monotonic()
+
+    # One-line, once-a-day update nudge. Stderr only (stdout stays exactly the
+    # saved path), and skipped under --quiet/--no-progress so machine callers
+    # stay clean. `doctor` checks unconditionally for a deliberate look.
+    if progress and not args.quiet:
+        _maybe_notify_update(lambda m: print(_yellow(m), file=sys.stderr))
 
     if progress:
         prompt_preview = f"{args.prompt[:60]}{'…' if len(args.prompt) > 60 else ''}"

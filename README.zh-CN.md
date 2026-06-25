@@ -41,6 +41,8 @@ git clone https://github.com/leeguooooo/chatgpt-imagegen
 sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
 ```
 
+**更新** —— `skills` 没有自动更新,所以 CLI 自己提醒:每天最多查一次 `main`,有新版就打一行提示。更新执行 `skills update chatgpt-imagegen`(或重跑自愈 `curl`);`chatgpt-imagegen doctor` 会显示当前版本与最新版。想关掉:`CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`。
+
 **后端**(配一个即可):
 
 - **`web`**(默认,不花 Codex 用量)—— 经 [`chrome-use`](https://github.com/leeguooooo/chrome-use) 驱动你已登录的 Chrome:
