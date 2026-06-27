@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.14.0"
+version: "0.15.0"
 description: "Generate raster images (PNG/JPEG/WebP) using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art) and the output should be a bitmap file saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system. Also use proactively: when authoring a document, blog post, technical proposal, design doc, README, or other long-form explanatory content, propose illustrations for the key concepts and generate them as background tasks — don't wait to be asked for an image."
 ---
 
@@ -115,8 +115,8 @@ Useful flags:
 | `--size 1024x1536` | Portrait covers, mobile splashes (verified) |
 | `--size 3840x2160` or similar | 4K landscape (forwarded as-is; backend may reject — fall back to a smaller verified size on failure) |
 | `--format webp` | Smaller files for web assets |
-| `--style NAME` | Apply a saved style preset (appended to the prompt as a suffix). See [Styles](#styles). Overrides any active default for this run. |
-| `--no-style` | Skip styles for this run even if the user set an active default. |
+| `--style NAME` | Apply a saved asset (a style snippet and/or pinned reference images). **Repeatable** — stack a character + a style, e.g. `--style mascot --style watercolor`. See [Styles & assets](#styles--assets). Overrides any active default set for this run. |
+| `--no-style` | Skip all assets (text *and* pinned refs) for this run even if the user set an active default. |
 | `--quiet` | Use in agent contexts so stdout is *only* the saved path. Progress still streams to stderr (use `--no-progress` to silence it). |
 | `--no-progress` | Fully silence the stderr progress timeline (errors still print). |
 | `--timeout SECONDS` | Total wall-clock budget (default 300). Large/detailed images can take 2–3 min — raise it if you see a `timed out` error. |
@@ -125,14 +125,31 @@ Useful flags:
 
 The script prints **just the saved path on stdout** in every mode; the readable progress timeline and any errors go to **stderr**, so `OUT=$(chatgpt-imagegen "..." --quiet)` captures only the path while you still see the timeline. Each timeline line is stamped with elapsed seconds (`[ 12.3s] generating`), so a slow run is legible and a stall is obvious.
 
-## Styles
+## Styles & assets
 
-A **style** is a named, reusable prompt snippet stored in `~/.config/chatgpt-imagegen/styles.json` (honours `$XDG_CONFIG_HOME`). `--style NAME` appends that snippet to the prompt as a suffix; it changes only the text sent to the model, not the output filename. There is **no default style out of the box** — generation is unchanged unless the user opts in.
+An **asset** is a named, reusable look stored in `~/.config/chatgpt-imagegen/styles.json` (honours `$XDG_CONFIG_HOME`). Each asset carries a text snippet **and/or pinned reference images**, plus a `kind`:
 
-- Apply one for a run: `chatgpt-imagegen "..." --style doodle`.
-- When a project has a consistent look, capture it **once** and reuse it across the session instead of pasting the same long style text into every prompt: `chatgpt-imagegen style add proj "<the house-style sentence>"`, then pass `--style proj` per run (or `chatgpt-imagegen style use proj` to make it the active default).
-- `chatgpt-imagegen style list` shows what's available (the active default is marked `*`); `chatgpt-imagegen style show NAME` prints a snippet in full; `--no-style` skips an active default for one run.
-- One built-in style ships: `doodle` (the deliberately-crude MS-Paint look). Resolution order per run: `--no-style` > `--style NAME` > active default > none. An unknown `--style` fails fast (before any browser/codex work), listing the available names.
+- **`--kind style`** (default) — a visual aesthetic (line, palette, texture). Its refs tell the model *"match this style, **don't** copy the content."*
+- **`--kind character`** — a recurring subject (a mascot, a persona). Its refs tell the model *"reproduce this character faithfully as the subject."*
+
+This is what lets a user **pin their own cartoon character or house style once and reuse it** — no re-passing `--ref` every time. Generation is unchanged unless the user opts in (no default out of the box).
+
+**Pinning & reusing:**
+- Pin a character from image files: `chatgpt-imagegen style add mascot "a round orange fox named Pip" --kind character --ref a.png --ref b.png` (a few angles → better consistency). The images are **copied into the asset library**, so the asset survives even if you move/delete the originals.
+- Pin the image you just liked: `chatgpt-imagegen style add mascot --from-last --kind character` (also works on `style add-ref mascot --from-last`). Flow: generate → like it → pin it → reuse.
+- Pin a pure-text style as before: `chatgpt-imagegen style add watercolor "soft watercolor, visible paper texture"`.
+- **Stack them**: `chatgpt-imagegen "Pip ordering coffee" --style mascot --style watercolor` (the same fox, in watercolor). Or set a default set: `chatgpt-imagegen style use mascot watercolor`.
+
+**Managing:**
+- `style list` — kind, a `📎N` badge for pinned refs, and `*` on the active default set.
+- `style show NAME` — kind + snippet + ref filenames + the asset's on-disk path.
+- `style add-ref NAME <img>` / `style rm-ref NAME <file>` — add/remove pinned images on an existing asset.
+- `style rm NAME` deletes the entry **and** its images; `style clear` empties the active set; `style reset` re-seeds built-ins and wipes the library.
+- `styles` (plural) is accepted as an alias for `style`.
+
+**Behavior:** `--ref` images passed at generation time are treated as the subject and stack on top of the active assets. At most **4** reference images attach per run; if more resolve, the first 4 (character-first) are used and the dropped ones are logged to stderr (never silent). Resolution order: `--no-style` > `--style NAME…` > active default set > none. One built-in style ships: `doodle` (the deliberately-crude MS-Paint look). An unknown `--style` fails fast, listing the available names.
+
+Legacy `styles.json` files (text-only entries from older versions) keep working and upgrade automatically on the next change.
 
 ## Save-path policy
 
@@ -158,7 +175,7 @@ When you're authoring a document, blog post, technical proposal, design doc, or 
 1. **Announce a brief plan first.** In one or two lines, say where figures will go and what each depicts (e.g. *"I'll add two figures: (1) the request→SSE flow, (2) the token-refresh path."*). Then generate — don't wait for approval; the plan is the reader's chance to redirect.
 2. **Fan out background subagents — one per figure.** Each runs the CLI with `--quiet -o <path>` so stdout is just the saved path; keep writing the prose while they render, and embed each image when it lands. Spawn them as background tasks with your own agent/task tooling — one figure per task, never blocking the writing.
 3. **Parallelism depends on the user's backend — don't override it.** Honour the user's `--backend` / `CHATGPT_IMAGEGEN_BACKEND` (default `auto`). On the **`web`** backend, concurrency is **1** — background figures **queue** and render one at a time (still fine: it's in the background, and it spends no Codex-usage). On **`codex`**, up to **4** render in parallel but each bills the metered Codex-usage bucket. Which backend to spend is the user's trade-off, not yours.
-4. **Choose a style to fit the document's tone.** There's no default illustration style. For informal or blog-style explainers, the built-in **`doodle`** look fits well — deliberately crude, content-accurate (`--style doodle`). For polished specs, pick a cleaner look or a style you've defined (see [Styles](#styles)).
+4. **Choose a style to fit the document's tone.** There's no default illustration style. For informal or blog-style explainers, the built-in **`doodle`** look fits well — deliberately crude, content-accurate (`--style doodle`). For polished specs, pick a cleaner look or a style you've defined (see [Styles & assets](#styles--assets)). To keep one character or look consistent across a document's figures, pin it as an asset and stack it with `--style`.
 5. **Don't over-illustrate.** At most one figure per major concept; never decorate for its own sake; and **never loop generating "variants" of the same figure** — that just burns subscription quota. If a figure comes out wrong, change the prompt once and regenerate, don't spray.
 
 ### Writing figure prompts

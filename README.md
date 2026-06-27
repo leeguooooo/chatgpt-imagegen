@@ -80,7 +80,7 @@ Common options — full list with `chatgpt-imagegen --help`:
 | `--size` | `auto` | `auto` or `WIDTHxHEIGHT` (e.g. `1024x1024`, `1536x1024`) |
 | `--format` | `png` | `png` \| `jpeg` \| `webp` |
 | `-i`, `--ref PATH_OR_URL` | — | [image-to-image](#image-to-image): edit a reference (repeatable) |
-| `--style NAME` | — | apply a saved [style](#styles) preset |
+| `--style NAME` | — | apply a saved [style/asset](#styles) (text + pinned refs); repeatable to stack |
 | `--profile` | `auto` | *(web)* which Chrome profile to drive (`auto` / `relay` / a name) |
 | `--open` | off | open the saved image in your default viewer |
 | `--quiet` | off | print **only** the saved path (for pipelines) |
@@ -109,14 +109,15 @@ Every image in this README is made by this tool:
 
 ## Styles
 
-A **style** is a reusable prompt snippet appended with `--style NAME` — so `--style doodle` turns `a cat` into `a cat, drawn as a deliberately crude doodle …`. There's one built-in (`doodle`) and no default until you opt in. Add your own and manage them with the `style` subcommand (`list` / `show` / `add` / `rm` / `use` / `clear` / `reset`); they live in `~/.config/chatgpt-imagegen/styles.json`.
+A **style** (asset) is a reusable look applied with `--style NAME` — a text snippet **and/or pinned reference images**. Two kinds: `--kind style` (match an aesthetic, don't copy content) and `--kind character` (reproduce a recurring subject — your mascot/persona). Pin your own cartoon character or house style **once** and reuse it without re-passing `--ref`; `--style` is repeatable so a character and a style **stack**. Manage them with the `style` subcommand (`list` / `show` / `add` / `add-ref` / `rm-ref` / `rm` / `use` / `clear` / `reset`); they live in `~/.config/chatgpt-imagegen/styles.json` with images copied under `assets/`.
 
 ```bash
-chatgpt-imagegen "a robot mascot" --style doodle           # one run
+chatgpt-imagegen "a robot mascot" --style doodle           # text style, one run
 chatgpt-imagegen style add brand "flat vector, bold shapes, teal accent, white background"
-chatgpt-imagegen style use brand                           # make it the default
-chatgpt-imagegen "a settings icon"                         # uses brand automatically
-chatgpt-imagegen "a photorealistic forest" --no-style      # skip the default once
+chatgpt-imagegen style add pip "a round orange fox" --kind character --ref pip-a.png --ref pip-b.png
+chatgpt-imagegen "Pip ordering coffee" --style pip --style brand   # same fox, brand style (stacked)
+chatgpt-imagegen style add pip --from-last --kind character        # pin the image you just liked
+chatgpt-imagegen "a photorealistic forest" --no-style      # skip all active assets once
 ```
 
 ## Troubleshooting

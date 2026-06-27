@@ -52,13 +52,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.15.0]: 可固定角色/画风——style 资产现在能绑参考图(--ref/--from-last),角色与画风可叠加(--style 可重复)
 # WHATSNEW[0.14.0]: 更新提示现在会列出每个新版本改了什么,而不只是「有新版」
 # WHATSNEW[0.13.0]: 新增每天一次的新版本提示(doctor 显示版本差异);可用 CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1 关闭
 # WHATSNEW[0.12.0]: CLI 缺失时自愈(curl 拉回);doctor 自检;进度上色;--open 出图后打开
@@ -453,7 +454,9 @@ def _downsize_reference(src_path: str) -> bytes | None:
 
 # ---------- request ----------
 
-def _build_web_text(prompt: str, size: str, is_edit: bool = False) -> str:
+def _build_web_text(
+    prompt: str, size: str, n_character_refs: int = 0, n_style_refs: int = 0
+) -> str:
     """Natural-language image request for the ChatGPT *page* (web backend).
 
     Deliberately NOT the codex wording: the page has no API `image_generation`
@@ -462,14 +465,33 @@ def _build_web_text(prompt: str, size: str, is_edit: bool = False) -> str:
     the page model toward Code Interpreter, which answers an image request by
     writing Python/PIL and returning a downloadable file — never a native image
     asset. So we ask plainly for a picture and let the native generator fire.
-    When `is_edit`, anchor on the attached reference so it edits rather than
-    inventing a fresh subject.
+
+    The framing is chosen from the attached-reference *counts* (replacing the
+    old binary is_edit): character refs must be reproduced faithfully (the
+    subject), style refs only set the aesthetic (NOT the content), and a mix
+    spells out which leading images are which. The character-only branch keeps
+    the original is_edit wording so existing ad-hoc `--ref` behavior is unchanged.
     """
-    if is_edit:
+    n_char, n_style = n_character_refs, n_style_refs
+    if n_char and n_style:
+        text = (
+            f"Use your built-in image generator. The first {n_char} attached "
+            f"image(s) show a recurring character — reproduce them faithfully as "
+            f"the subject. The remaining {n_style} attached image(s) are style "
+            f"references — match their aesthetic, do NOT copy their content. "
+            f"Scene: {prompt}."
+        )
+    elif n_char:
         text = (
             f"Edit the attached image directly with your built-in image "
             f"generator: {prompt}. Keep the reference as the canonical subject — "
             f"reproduce its pattern, colours, and texture faithfully."
+        )
+    elif n_style:
+        text = (
+            f"Create an image with your built-in image generator: {prompt}. "
+            f"Match the visual style of the attached reference image(s); "
+            f"do NOT copy their content."
         )
     else:
         text = f"Create an image with your built-in image generator: {prompt}."
@@ -479,7 +501,8 @@ def _build_web_text(prompt: str, size: str, is_edit: bool = False) -> str:
 
 
 def _build_user_text(
-    prompt: str, size: str, output_format: str, is_edit: bool = False
+    prompt: str, size: str, output_format: str,
+    n_character_refs: int = 0, n_style_refs: int = 0,
 ) -> str:
     """Natural-language instruction for the **codex** backend.
 
@@ -487,16 +510,33 @@ def _build_user_text(
     output format is correct here (unlike the web page — see _build_web_text).
     The codex endpoint has no size/format knobs in the message body, so we fold
     those hints into the prompt; the model reads them and picks the aspect ratio.
-    When `is_edit`, the instruction anchors on the attached reference image so
-    the model edits it faithfully rather than inventing a fresh subject.
+
+    Framing follows the attached-reference counts (see _build_web_text): style
+    refs set the aesthetic only, character refs are the canonical subject, mixed
+    spells out which leading images are which.
     """
-    if is_edit:
+    n_char, n_style = n_character_refs, n_style_refs
+    if n_char and n_style:
+        user_text = (
+            f"Use the image_generation tool. The first {n_char} attached "
+            f"image(s) show a recurring character — reproduce them faithfully as "
+            f"the subject. The remaining {n_style} attached image(s) are style "
+            f"references — match their aesthetic, not their content. "
+            f"Request: {prompt}. Output format: {output_format}."
+        )
+    elif n_char:
         user_text = (
             "Use the image_generation tool to edit the attached reference "
             "image(s). Treat the reference as the canonical subject — reproduce "
             "its exact pattern, colours, and texture faithfully; do not redesign "
             f"or stylise the subject itself. Request: {prompt}. "
             f"Output format: {output_format}."
+        )
+    elif n_style:
+        user_text = (
+            "Use the image_generation tool to render the following, matching the "
+            "visual style of the attached reference image(s); do not copy their "
+            f"content. Request: {prompt}. Output format: {output_format}."
         )
     else:
         user_text = (
@@ -510,16 +550,36 @@ def _build_user_text(
     return user_text
 
 
+def _ref_counts(args: argparse.Namespace, refs: list | None) -> tuple[int, int]:
+    """(n_character_refs, n_style_refs) for the active run.
+
+    main() partitions assets and stores the counts on ``args``; if they're
+    absent (a caller that passes bare refs without the asset machinery) we fall
+    back to treating every attached reference as a character/subject — the old
+    is_edit behavior — so nothing regresses.
+    """
+    n_char = getattr(args, "n_character_refs", None)
+    n_style = getattr(args, "n_style_refs", None)
+    if n_char is None or n_style is None:
+        return (len(refs) if refs else 0), 0
+    return n_char, n_style
+
+
 def _build_payload(
     prompt: str, size: str, output_format: str, model: str,
     refs: list[tuple[str, str]] | None = None,
+    n_character_refs: int = 0, n_style_refs: int = 0,
 ) -> JsonDict:
     """Build the codex/responses body. When `refs` (list of (b64, mime)) is
     given, attach each as an `input_image` content part ahead of the text and
     force the image tool to fire (`tool_choice: required`) — the img2img path.
+
+    The instruction wording follows the character/style ref counts; `tool_choice`
+    stays "required" whenever any reference is attached (including style-only).
     """
-    is_edit = bool(refs)
-    user_text = _build_user_text(prompt, size, output_format, is_edit=is_edit)
+    user_text = _build_user_text(
+        prompt, size, output_format,
+        n_character_refs=n_character_refs, n_style_refs=n_style_refs)
 
     image_tool: JsonDict = {"type": "image_generation", "output_format": output_format}
     if size and size != "auto":
@@ -1466,7 +1526,10 @@ def run_web(
     # blocked on the serialize lock (issue #7) before reaching here, and that
     # queue wait must not eat into the --timeout image budget.
     deadline = time.monotonic() + args.timeout
-    user_text = _build_web_text(args.gen_prompt, args.size, is_edit=bool(refs))
+    _n_char, _n_style = _ref_counts(args, refs)
+    user_text = _build_web_text(
+        args.gen_prompt, args.size,
+        n_character_refs=_n_char, n_style_refs=_n_style)
 
     def emit(msg: str) -> None:
         if progress:
@@ -1864,8 +1927,10 @@ def run_codex(
             )
 
     version = _detect_codex_version()
+    n_char, n_style = _ref_counts(args, refs)
     payload = _build_payload(args.gen_prompt, args.size, args.format, args.model,
-                             refs=loaded_refs)
+                             refs=loaded_refs,
+                             n_character_refs=n_char, n_style_refs=n_style)
 
     with _concurrency_slot("codex", _backend_limit("codex", CODEX_CONCURRENCY_DEFAULT),
                            progress, start):
@@ -1946,7 +2011,14 @@ def _dispatch(
         if progress:
             print(_fmt_progress(time.monotonic() - start, msg), file=sys.stderr)
 
-    refs = getattr(args, "ref", None)
+    # main() has already resolved the active asset set, partitioned it into
+    # character/style groups, applied the total-ref cap, and stored the ordered
+    # file list (asset refs + ad-hoc --ref) on args. Fall back to the raw --ref
+    # list if that machinery didn't run (defensive).
+    refs = getattr(args, "resolved_refs", None)
+    if refs is None:
+        refs = getattr(args, "ref", None)
+    refs = refs or None
     # Image-to-image (refs) is now supported on BOTH backends: web attaches the
     # reference to the composer via `chrome-use upload`, codex sends it as an
     # input_image part. So refs ride the normal backend selection below — auto
@@ -2019,6 +2091,16 @@ _BUILTIN_STYLES = {
 
 _STYLE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
+# An "asset" (a v2 styles entry) is either a recurring character (reproduce it
+# faithfully as the subject) or a style (match the aesthetic, not the content).
+_STYLE_KINDS = ("character", "style")
+# Extension a copied reference is normalized to, by sniffed MIME.
+_REF_EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+# Default cap on how many reference images one generation may attach. The
+# resolved set is ordered character-first; anything past the cap is dropped with
+# a logged warning (never silently truncated).
+REF_ATTACH_CAP = 4
+
 
 def _valid_style_name(name: str) -> bool:
     """A style name is a lowercase slug: alnum/-/_ , starting alphanumeric."""
@@ -2044,6 +2126,112 @@ def _styles_path() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME", "").strip()
     root = Path(base) if base else Path.home() / ".config"
     return root / "chatgpt-imagegen" / "styles.json"
+
+
+# ---------- asset library (reference images pinned per asset) ----------
+
+def _assets_root() -> Path:
+    """Directory holding each asset's copied reference images
+    (~/.config/chatgpt-imagegen/assets/)."""
+    return _styles_path().parent / "assets"
+
+
+def _asset_dir(name: str) -> Path:
+    """The on-disk directory that holds asset ``name``'s reference images."""
+    return _assets_root() / name
+
+
+def _last_output_path() -> Path:
+    """Tiny state file recording the most recently generated image (for
+    `--from-last`)."""
+    return _styles_path().parent / "last-output.json"
+
+
+def _record_last_output(path: Path) -> None:
+    """Record the absolute path of the just-saved image so `--from-last` can pin
+    it later. Best-effort: this bookkeeping never fails a real generation."""
+    try:
+        p = _last_output_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(
+            json.dumps({"path": str(path.resolve()), "ts": time.time()}),
+            encoding="utf-8")
+        os.replace(tmp, p)
+    except Exception:  # noqa: BLE001 — capture is a nicety, never fatal
+        pass
+
+
+def _read_last_output() -> Path | None:
+    """The path recorded by the last successful generation, or None."""
+    try:
+        data = json.loads(_last_output_path().read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    p = data.get("path") if isinstance(data, dict) else None
+    return Path(p) if isinstance(p, str) and p else None
+
+
+def _resolve_from_last() -> str:
+    """Path of the most recently generated image, for `--from-last`. Exits with
+    an actionable message if nothing was recorded or the file is gone."""
+    p = _read_last_output()
+    if p is None:
+        raise SystemExit(
+            "error: --from-last: no recently generated image was recorded yet. "
+            "Generate one first, or pass an explicit --ref <path>.")
+    if not p.is_file():
+        raise SystemExit(
+            f"error: --from-last: the last generated image is gone ({p}). "
+            f"Pass an explicit --ref <path> instead.")
+    return str(p)
+
+
+def _next_ref_index(asset_dir: Path, existing: list[str]) -> int:
+    """Next free `ref-<n>` index, considering both the entry's recorded refs and
+    whatever already sits in the asset dir (so copies never collide)."""
+    nums = [0]
+    names = list(existing)
+    if asset_dir.is_dir():
+        names += [f.name for f in asset_dir.iterdir()]
+    for nm in names:
+        m = re.match(r"ref-(\d+)\.", nm)
+        if m:
+            nums.append(int(m.group(1)))
+    return max(nums) + 1
+
+
+def _copy_ref_into_asset(asset_dir: Path, src: str, existing: list[str]) -> str:
+    """Validate, downsize-if-needed, and copy ``src`` into ``asset_dir`` under a
+    normalized ``ref-<n>.<ext>`` filename; return that filename.
+
+    Validation uses `_sniff_mime` (PNG/JPEG/WEBP). Oversized images are shrunk by
+    calling `_downsize_reference` DIRECTLY (not `_load_reference`, which is the
+    codex-only base64 path). Exits cleanly on a missing file / unsupported type.
+    """
+    p = Path(src).expanduser()
+    if not p.is_file():
+        sys.exit(f"reference image not found: {src}")
+    raw = p.read_bytes()
+    mime = _sniff_mime(raw)
+    if mime is None:
+        sys.exit(f"unsupported reference image type for {src!r} (need PNG, JPEG, or WEBP)")
+    ext = _REF_EXT_BY_MIME.get(mime, "png")
+    data = raw
+    # Downsize oversized references just like the codex path does — directly via
+    # sips, keeping the no-pip-deps property — so the library stays portable.
+    if len(base64.b64encode(raw)) > REF_B64_BUDGET:
+        shrunk = _downsize_reference(str(p))
+        if shrunk is not None:
+            data = shrunk
+            ext = "jpg"
+    fname = f"ref-{_next_ref_index(asset_dir, existing)}.{ext}"
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    dst = asset_dir / fname
+    tmp = dst.with_name(dst.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, dst)
+    return fname
 
 
 # ---------- self-update reminder ----------
@@ -2143,7 +2331,55 @@ def _builtin_styles() -> dict:
 
 
 def _default_styles_doc() -> dict:
-    return {"version": 1, "default": "", "styles": _builtin_styles()}
+    # version 2: entries are {kind, snippet, refs} objects and `default` is a
+    # list. Built-ins are seeded as bare strings (a legacy shape that
+    # `_normalize_doc` upgrades on load) so the on-disk seed stays minimal.
+    return {"version": 2, "default": [], "styles": _builtin_styles()}
+
+
+def _normalize_entry(value: Any) -> dict:
+    """Coerce one styles entry into the v2 object shape {kind, snippet, refs}.
+
+    A legacy bare string → {kind: "style", snippet: <str>, refs: []}. An object
+    is sanitized: kind clamped to the allowed set, snippet to a str, refs to a
+    list of strings.
+    """
+    if isinstance(value, str):
+        return {"kind": "style", "snippet": value, "refs": []}
+    if isinstance(value, dict):
+        kind = value.get("kind")
+        if kind not in _STYLE_KINDS:
+            kind = "style"
+        snippet = value.get("snippet")
+        if not isinstance(snippet, str):
+            snippet = ""
+        refs = value.get("refs")
+        refs = [r for r in refs if isinstance(r, str)] if isinstance(refs, list) else []
+        return {"kind": kind, "snippet": snippet, "refs": refs}
+    return {"kind": "style", "snippet": "", "refs": []}
+
+
+def _normalize_doc(doc: dict) -> dict:
+    """In-place upgrade a styles doc to version 2 so ALL downstream code sees
+    objects + a list `default`.
+
+    Centralizing this is what lets the generation hot path, `style list`, and
+    `style show` stop assuming the value is a bare string. Mutating commands
+    rewrite the upgraded shape; plain reads don't (no destructive auto-migration).
+    """
+    styles = doc.get("styles")
+    if isinstance(styles, dict):
+        for name, value in list(styles.items()):
+            styles[name] = _normalize_entry(value)
+    default = doc.get("default")
+    if isinstance(default, str):
+        doc["default"] = [default] if default else []
+    elif isinstance(default, list):
+        doc["default"] = [d for d in default if isinstance(d, str)]
+    else:
+        doc["default"] = []
+    doc["version"] = 2
+    return doc
 
 
 def _save_styles(doc: dict) -> None:
@@ -2162,8 +2398,8 @@ def _load_styles() -> dict:
     path = _styles_path()
     if not path.exists():
         doc = _default_styles_doc()
-        _save_styles(doc)
-        return doc
+        _save_styles(doc)            # seed the minimal (legacy-shaped) built-ins
+        return _normalize_doc(doc)   # but hand callers the normalized v2 shape
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
@@ -2173,9 +2409,9 @@ def _load_styles() -> dict:
             f"error: malformed styles file {path} "
             f"(expected an object with a 'styles' map). "
             f"Fix it by hand or run `chatgpt-imagegen style reset`.")
-    doc.setdefault("version", 1)
-    doc.setdefault("default", "")
-    return doc
+    # Normalize immediately so every downstream site sees v2 objects + a list
+    # `default` — legacy bare-string entries and a string `default` included.
+    return _normalize_doc(doc)
 
 
 def _die_unknown_style(name: str, styles: dict) -> None:
@@ -2202,6 +2438,70 @@ def _resolve_style_name(doc: dict, *, style_arg: str | None,
     return name
 
 
+def _resolve_active_styles(doc: dict, *, style_args: list[str] | None,
+                           no_style: bool) -> list[str]:
+    """The active asset set (ordered) for a run. Stacking-aware successor to
+    `_resolve_style_name`:
+
+    1. --no-style          → []  (disables all asset application)
+    2. explicit --style …  → those names, in order
+    3. else                → the saved `default` list, in order
+
+    Unknown names raise SystemExit (reusing `_die_unknown_style`).
+    """
+    if no_style:
+        return []
+    styles = doc.get("styles", {})
+    names = list(style_args) if style_args else list(doc.get("default") or [])
+    for n in names:
+        if n not in styles:
+            _die_unknown_style(n, styles)
+    return names
+
+
+def _collect_refs(doc: dict, active_names: list[str],
+                  adhoc_refs: list[str] | None) -> list[dict]:
+    """Build the ordered reference list for a run.
+
+    Each item is ``{ref, group, label}`` where ``ref`` is a path/URL to attach,
+    ``group`` is "character" or "style", and ``label`` names it for logging.
+    Ordering (deterministic): character group first, then style group. Within
+    the character group: character assets in active order, then the ad-hoc
+    ``--ref`` images last (treated as character/subject, preserving the old
+    is_edit behavior). Within the style group: active order.
+
+    Asset reference files must exist on disk — a missing one exits with an error
+    naming the asset and the expected path (never silently skipped).
+    """
+    styles = doc.get("styles", {})
+    char_items: list[dict] = []
+    style_items: list[dict] = []
+    for name in active_names:
+        entry = styles[name]
+        group = "character" if entry.get("kind") == "character" else "style"
+        adir = _asset_dir(name)
+        for fn in (entry.get("refs") or []):
+            fpath = adir / fn
+            if not fpath.is_file():
+                raise SystemExit(
+                    f"error: asset {name!r} references {fn!r} but the file is "
+                    f"missing: {fpath}. Re-pin it (`chatgpt-imagegen style "
+                    f"add-ref {name} <img>`) or drop it "
+                    f"(`chatgpt-imagegen style rm-ref {name} {fn}`).")
+            rec = {"ref": str(fpath), "group": group, "label": f"{name}/{fn}"}
+            (char_items if group == "character" else style_items).append(rec)
+    for r in (adhoc_refs or []):
+        char_items.append({"ref": r, "group": "character", "label": r})
+    return char_items + style_items
+
+
+def _cap_refs(ordered: list[dict], cap: int) -> tuple[list[dict], list[dict]]:
+    """Split an ordered ref list at ``cap`` → (kept, dropped). cap<=0 disables."""
+    if cap and len(ordered) > cap:
+        return ordered[:cap], ordered[cap:]
+    return list(ordered), []
+
+
 def _style_command(argv: list[str]) -> int:
     """`chatgpt-imagegen style <verb> ...` — manage style presets."""
     p = argparse.ArgumentParser(
@@ -2209,18 +2509,32 @@ def _style_command(argv: list[str]) -> int:
         description="Manage reusable prompt-style presets "
                     f"(stored in {_styles_path()}).")
     sub = p.add_subparsers(dest="verb")
-    sub.add_parser("list", help="list all styles (the active default is marked *)")
-    sp = sub.add_parser("show", help="print one style's snippet in full")
+    sub.add_parser("list", help="list all assets (kind, 📎ref count, active *)")
+    sp = sub.add_parser("show", help="print one asset's kind, snippet, refs, path")
     sp.add_argument("name")
-    sp = sub.add_parser("add", help="create or overwrite a style")
+    sp = sub.add_parser("add", help="create or overwrite an asset (snippet and/or refs)")
     sp.add_argument("name")
-    sp.add_argument("snippet")
-    sp = sub.add_parser("rm", help="delete a style")
+    sp.add_argument("snippet", nargs="?", default=None)
+    sp.add_argument("--ref", action="append", default=None, metavar="IMG",
+                    help="reference image to pin (repeatable); copied into the library")
+    sp.add_argument("--kind", choices=list(_STYLE_KINDS), default="style",
+                    help="character (reproduce as subject) or style (match aesthetic)")
+    sp.add_argument("--from-last", action="store_true",
+                    help="pin the most recently generated image as a reference")
+    sp = sub.add_parser("add-ref", help="append reference image(s) to an asset")
     sp.add_argument("name")
-    sp = sub.add_parser("use", help="set the active default style")
+    sp.add_argument("img", nargs="*")
+    sp.add_argument("--from-last", action="store_true",
+                    help="pin the most recently generated image")
+    sp = sub.add_parser("rm-ref", help="remove one reference image from an asset")
     sp.add_argument("name")
-    sub.add_parser("clear", help="unset the active default style")
-    rp = sub.add_parser("reset", help="re-seed the built-in styles (discards edits)")
+    sp.add_argument("file")
+    sp = sub.add_parser("rm", help="delete an asset (entry + its reference images)")
+    sp.add_argument("name")
+    sp = sub.add_parser("use", help="set the active default asset set (accepts multiple)")
+    sp.add_argument("name", nargs="+")
+    sub.add_parser("clear", help="empty the active default asset set")
+    rp = sub.add_parser("reset", help="re-seed built-ins and wipe the asset library")
     rp.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
     a = p.parse_args(argv)
 
@@ -2235,14 +2549,18 @@ def _style_command(argv: list[str]) -> int:
         if not styles:
             print("(no styles)")
             return 0
-        default = doc.get("default") or ""
+        default = doc.get("default") or []
         for name in sorted(styles):
-            preview = " ".join(styles[name].split())
+            entry = styles[name]
+            preview = " ".join((entry.get("snippet") or "").split())
             if len(preview) > 60:
                 preview = preview[:59] + "…"
-            print(f"{'*' if name == default else ' '} {name}: {preview}")
+            nrefs = len(entry.get("refs") or [])
+            badge = f" 📎{nrefs}" if nrefs else ""
+            mark = "*" if name in default else " "
+            print(f"{mark} {name} [{entry.get('kind', 'style')}]{badge}: {preview}")
         if default:
-            print(f"\n* = active default ({default})")
+            print(f"\n* = active default ({', '.join(default)})")
         else:
             print("\n(no active default — pass --style NAME to apply one)")
         return 0
@@ -2250,7 +2568,14 @@ def _style_command(argv: list[str]) -> int:
     if a.verb == "show":
         if a.name not in styles:
             _die_unknown_style(a.name, styles)
-        print(styles[a.name])
+        entry = styles[a.name]
+        print(f"kind: {entry.get('kind', 'style')}")
+        if entry.get("snippet"):
+            print(f"snippet: {entry['snippet']}")
+        refs = entry.get("refs") or []
+        if refs:
+            print(f"refs: {', '.join(refs)}")
+        print(f"path: {_asset_dir(a.name)}")
         return 0
 
     if a.verb == "add":
@@ -2258,49 +2583,112 @@ def _style_command(argv: list[str]) -> int:
             raise SystemExit(
                 f"error: invalid style name {a.name!r}; use lowercase letters, "
                 f"digits, '-' or '_', starting with a letter or digit.")
+        srcs = list(a.ref or [])
+        if a.from_last:
+            srcs.append(_resolve_from_last())
+        snippet = (a.snippet or "").strip()
+        if not snippet and not srcs:
+            raise SystemExit(
+                "error: `style add` needs a snippet and/or at least one "
+                "--ref/--from-last image.")
         existed = a.name in styles
-        styles[a.name] = a.snippet
+        asset_dir = _asset_dir(a.name)
+        # Overwrite cleanly: drop any prior reference files for this name so a
+        # rebuilt asset never inherits stale refs.
+        if asset_dir.exists():
+            shutil.rmtree(asset_dir, ignore_errors=True)
+        stored: list[str] = []
+        for src in srcs:
+            stored.append(_copy_ref_into_asset(asset_dir, src, stored))
+        styles[a.name] = {"kind": a.kind, "snippet": snippet, "refs": stored}
         _save_styles(doc)
-        print(f"{'updated' if existed else 'added'} style {a.name!r}", file=sys.stderr)
+        extra = f" ({len(stored)} ref{'s' if len(stored) != 1 else ''})" if stored else ""
+        print(f"{'updated' if existed else 'added'} {a.kind} asset {a.name!r}{extra}",
+              file=sys.stderr)
+        return 0
+
+    if a.verb == "add-ref":
+        if a.name not in styles:
+            _die_unknown_style(a.name, styles)
+        srcs = list(a.img or [])
+        if a.from_last:
+            srcs.append(_resolve_from_last())
+        if not srcs:
+            raise SystemExit(
+                "error: `style add-ref` needs at least one image (or --from-last).")
+        entry = styles[a.name]
+        refs = entry.setdefault("refs", [])
+        asset_dir = _asset_dir(a.name)
+        added = []
+        for src in srcs:
+            fn = _copy_ref_into_asset(asset_dir, src, refs)
+            refs.append(fn)
+            added.append(fn)
+        _save_styles(doc)
+        print(f"added {len(added)} ref(s) to {a.name!r}: {', '.join(added)}",
+              file=sys.stderr)
+        return 0
+
+    if a.verb == "rm-ref":
+        if a.name not in styles:
+            _die_unknown_style(a.name, styles)
+        entry = styles[a.name]
+        refs = entry.get("refs") or []
+        if a.file not in refs:
+            avail = ", ".join(refs) or "(none)"
+            raise SystemExit(
+                f"error: {a.name!r} has no reference {a.file!r}. available: {avail}")
+        refs.remove(a.file)
+        entry["refs"] = refs
+        try:
+            (_asset_dir(a.name) / a.file).unlink(missing_ok=True)
+        except OSError:
+            pass
+        _save_styles(doc)
+        print(f"removed ref {a.file!r} from {a.name!r}", file=sys.stderr)
         return 0
 
     if a.verb == "rm":
         if a.name not in styles:
             _die_unknown_style(a.name, styles)
         del styles[a.name]
-        cleared = doc.get("default") == a.name
+        shutil.rmtree(_asset_dir(a.name), ignore_errors=True)
+        default = doc.get("default") or []
+        cleared = a.name in default
         if cleared:
-            doc["default"] = ""
+            doc["default"] = [d for d in default if d != a.name]
         _save_styles(doc)
-        tail = " (was the active default; default cleared)" if cleared else ""
-        print(f"removed style {a.name!r}{tail}", file=sys.stderr)
+        tail = " (was in the active default; removed from it)" if cleared else ""
+        print(f"removed asset {a.name!r}{tail}", file=sys.stderr)
         return 0
 
     if a.verb == "use":
-        if a.name not in styles:
-            _die_unknown_style(a.name, styles)
-        doc["default"] = a.name
+        for name in a.name:
+            if name not in styles:
+                _die_unknown_style(name, styles)
+        doc["default"] = list(a.name)
         _save_styles(doc)
-        print(f"active default style set to {a.name!r}", file=sys.stderr)
+        print(f"active default set to {', '.join(a.name)}", file=sys.stderr)
         return 0
 
     if a.verb == "clear":
-        doc["default"] = ""
+        doc["default"] = []
         _save_styles(doc)
-        print("active default style cleared", file=sys.stderr)
+        print("active default cleared", file=sys.stderr)
         return 0
 
     if a.verb == "reset":
         if not a.yes:
             sys.stderr.write(
-                "This discards all style edits and restores built-ins. "
-                "Continue? [y/N] ")
+                "This discards all style edits AND deletes every pinned "
+                "reference image, restoring built-ins. Continue? [y/N] ")
             sys.stderr.flush()
             if sys.stdin.readline().strip().lower() not in ("y", "yes"):
                 print("aborted", file=sys.stderr)
                 return 1
+        shutil.rmtree(_assets_root(), ignore_errors=True)
         _save_styles(_default_styles_doc())
-        print("styles reset to built-ins", file=sys.stderr)
+        print("styles reset to built-ins (asset library wiped)", file=sys.stderr)
         return 0
 
     return 0
@@ -2431,14 +2819,14 @@ examples:
 
 subcommands:
   chatgpt-imagegen doctor          check which backend is ready (and which auto picks)
-  chatgpt-imagegen style <verb>    manage reusable prompt-style presets
+  chatgpt-imagegen style <verb>    manage reusable style/character assets (alias: styles)
 
 docs: https://github.com/leeguooooo/chatgpt-imagegen
 """
 
 
 def main() -> int:
-    if len(sys.argv) > 1 and sys.argv[1] == "style":
+    if len(sys.argv) > 1 and sys.argv[1] in ("style", "styles"):
         return _style_command(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "doctor":
         return _doctor_command(sys.argv[2:])
@@ -2454,14 +2842,16 @@ def main() -> int:
     parser.add_argument("prompt", help="Description of the image to generate")
     style_grp = parser.add_mutually_exclusive_group()
     style_grp.add_argument(
-        "--style", default=None, metavar="NAME",
-        help="Apply a saved style preset's text to this prompt "
-             "(see `chatgpt-imagegen style list`). Overrides the active "
-             "default for this run.",
+        "--style", action="append", default=None, metavar="NAME",
+        help="Apply a saved asset (style or character) to this prompt — its text "
+             "snippet and any pinned reference images (see `chatgpt-imagegen "
+             "style list`). Repeatable: multiple assets stack. Overrides the "
+             "active default set for this run.",
     )
     style_grp.add_argument(
         "--no-style", action="store_true",
-        help="Skip styles for this run even if an active default is set.",
+        help="Skip all assets (text + refs) for this run even if a default set "
+             "is configured.",
     )
     parser.add_argument("-o", "--out", help="Output file path (default: assets/generated/<slug>.<ext>)")
     parser.add_argument(
@@ -2575,14 +2965,39 @@ def main() -> int:
              "(macOS `open`, Linux `xdg-open`, Windows default). Best-effort.",
     )
     args = parser.parse_args()
-    _styles_doc = _load_styles()
-    _style_name = _resolve_style_name(
-        _styles_doc, style_arg=args.style, no_style=args.no_style)
-    _snippet = _styles_doc["styles"][_style_name] if _style_name else None
-    args.gen_prompt = _compose_prompt(args.prompt, _snippet)
     progress = not args.no_progress
+    _styles_doc = _load_styles()
+    # Resolve the active asset set (stacking-aware), fold each asset's snippet
+    # into the prompt, then partition the assets' reference images into
+    # character/style groups in deterministic order.
+    _active = _resolve_active_styles(
+        _styles_doc, style_args=args.style, no_style=args.no_style)
+    _gen_prompt = args.prompt
+    for _name in _active:
+        _gen_prompt = _compose_prompt(
+            _gen_prompt, _styles_doc["styles"][_name].get("snippet"))
+    args.gen_prompt = _gen_prompt
+
+    _ordered_refs = _collect_refs(_styles_doc, _active, args.ref)
+    _kept_refs, _dropped_refs = _cap_refs(_ordered_refs, REF_ATTACH_CAP)
+    args.resolved_refs = [r["ref"] for r in _kept_refs]
+    args.n_character_refs = sum(1 for r in _kept_refs if r["group"] == "character")
+    args.n_style_refs = sum(1 for r in _kept_refs if r["group"] == "style")
+
     stall_timeout = float(min(args.stall_timeout, args.timeout))
     start = time.monotonic()
+
+    # Over-cap drops are a data-affecting event, not progress chatter: the spec
+    # requires we "never silently truncate" and log exactly which refs were
+    # dropped. Emit unconditionally to stderr so scripted/`--no-progress`
+    # callers still see it (errors/warnings survive `--no-progress`).
+    if _dropped_refs:
+        names = ", ".join(r["label"] for r in _dropped_refs)
+        print(_fmt_progress(
+            0.0,
+            f"warning: more than {REF_ATTACH_CAP} reference images resolved; "
+            f"attaching the first {REF_ATTACH_CAP} (character-first), dropped: "
+            f"{names}"), file=sys.stderr)
 
     # One-line, once-a-day update nudge. Stderr only (stdout stays exactly the
     # saved path), and skipped under --quiet/--no-progress so machine callers
@@ -2596,8 +3011,8 @@ def main() -> int:
                         f"format={args.format} timeout={args.timeout}s)")
         print(_fmt_progress(0.0, f"requesting image  {meta_bit}"), file=sys.stderr)
         print(_dim(f"           prompt: {prompt_preview}"), file=sys.stderr)
-        if _style_name:
-            print(_dim(f"           style: {_style_name}"), file=sys.stderr)
+        if _active:
+            print(_dim(f"           styles: {', '.join(_active)}"), file=sys.stderr)
 
     image_bytes, meta = _dispatch(args, progress, stall_timeout, start)
 
@@ -2606,6 +3021,9 @@ def main() -> int:
         _maybe_warn_extension_mismatch(out_path, args.format)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(image_bytes)
+    # Record this image so `style add --from-last` / `add-ref --from-last` can
+    # pin it. The `style` subcommand returns early above, so it never records.
+    _record_last_output(out_path)
 
     if progress:
         size_info = f"  size={meta.get('size')}" if meta.get("size") else ""

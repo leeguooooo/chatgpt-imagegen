@@ -80,7 +80,7 @@ chatgpt-imagegen "<prompt>" [options]
 | `--size` | `auto` | `auto` 或 `WIDTHxHEIGHT`(如 `1024x1024`、`1536x1024`) |
 | `--format` | `png` | `png` \| `jpeg` \| `webp` |
 | `-i`, `--ref PATH_OR_URL` | — | [图生图](#图生图):编辑一张参考图(可重复) |
-| `--style NAME` | — | 套用保存好的[风格](#风格)预设 |
+| `--style NAME` | — | 套用保存的[风格/资产](#风格)(文字 + 钉住的参考图);可重复以叠加 |
 | `--profile` | `auto` | *(web)* 驱动哪个 Chrome profile(`auto` / `relay` / profile 名) |
 | `--open` | 关 | 出图后用默认看图器打开 |
 | `--quiet` | 关 | stdout **只**打印保存路径(适合管道) |
@@ -109,14 +109,15 @@ chatgpt-imagegen "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg
 
 ## 风格
 
-**风格(style)**是一段可复用的提示词片段,用 `--style NAME` 作为后缀拼到 prompt 后面 —— 比如 `--style doodle` 把 `a cat` 变成 `a cat, drawn as a deliberately crude doodle …`。内置一个 `doodle`,默认不套用任何风格直到你主动开启。用 `style` 子命令管理(`list` / `show` / `add` / `rm` / `use` / `clear` / `reset`),存在 `~/.config/chatgpt-imagegen/styles.json`。
+**风格(资产)**是可复用的「外观」,用 `--style NAME` 套用 —— 一段文字片段**和/或钉住的参考图**。两种 kind:`--kind style`(学画风,别抄内容)和 `--kind character`(还原一个固定主体 —— 你的吉祥物/角色)。把自己的卡通形象或品牌画风**钉一次**,以后无需每次再传 `--ref`;`--style` 可重复,于是角色和画风能**叠加**。用 `style` 子命令管理(`list` / `show` / `add` / `add-ref` / `rm-ref` / `rm` / `use` / `clear` / `reset`),存在 `~/.config/chatgpt-imagegen/styles.json`,图片复制进 `assets/`。
 
 ```bash
-chatgpt-imagegen "a robot mascot" --style doodle           # 单次
+chatgpt-imagegen "a robot mascot" --style doodle           # 文字风格,单次
 chatgpt-imagegen style add brand "flat vector, bold shapes, teal accent, white background"
-chatgpt-imagegen style use brand                           # 设为默认
-chatgpt-imagegen "a settings icon"                         # 自动套用 brand
-chatgpt-imagegen "a photorealistic forest" --no-style      # 单次跳过默认
+chatgpt-imagegen style add pip "一只圆滚滚的橙色狐狸" --kind character --ref pip-a.png --ref pip-b.png
+chatgpt-imagegen "Pip 在点咖啡" --style pip --style brand   # 同一只狐狸 + 品牌画风(叠加)
+chatgpt-imagegen style add pip --from-last --kind character # 把刚生成、满意的那张钉成角色
+chatgpt-imagegen "a photorealistic forest" --no-style      # 单次跳过所有活跃资产
 ```
 
 ## 排错
