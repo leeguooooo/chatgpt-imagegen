@@ -361,6 +361,29 @@ class StyleCommand(unittest.TestCase):
             self.assertIn("neon", lines)
             self.assertIn("*", lines)   # default marker
 
+    def test_v2_object_entry_does_not_crash_list_show_compose(self):
+        # Regression: a v2 styles.json (entries are {kind,snippet,refs} objects)
+        # must not raise "AttributeError: 'dict' object has no attribute 'strip'"
+        # on `style list`, `style show`, or the resolve+compose generation path —
+        # the crash old (string-only) builds hit against a v2 file.
+        with _tmp_xdg():
+            cig._save_styles({
+                "version": 2, "default": ["xiaohei"],
+                "styles": {"xiaohei": {"kind": "style",
+                                       "snippet": "hand-drawn 小黑", "refs": []}},
+            })
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cig._style_command(["list"])
+                cig._style_command(["show", "xiaohei"])
+            self.assertIn("xiaohei", out.getvalue())
+            doc = cig._load_styles()
+            active = cig._resolve_active_styles(doc, style_args=None, no_style=False)
+            self.assertEqual(active, ["xiaohei"])
+            composed = cig._compose_prompt(
+                "a cat", doc["styles"]["xiaohei"]["snippet"])
+            self.assertIn("hand-drawn 小黑", composed)
+
     def test_reset_restores_builtins(self):
         with _tmp_xdg():
             cig._style_command(["add", "neon", "x"])
