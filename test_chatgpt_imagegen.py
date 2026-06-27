@@ -11,6 +11,7 @@ Run:  python3 -m unittest test_chatgpt_imagegen -v
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 import re
 import tempfile
@@ -222,8 +223,9 @@ class StyleStorage(unittest.TestCase):
     def test_load_seeds_builtins_when_missing(self):
         with _tmp_xdg():
             doc = cig._load_styles()
-            self.assertEqual(doc["default"], "")
+            self.assertEqual(doc["default"], [])          # v2: default is a list
             self.assertIn("doodle", doc["styles"])
+            self.assertEqual(doc["styles"]["doodle"]["kind"], "style")  # normalized
             self.assertTrue(cig._styles_path().exists())  # seeded to disk
 
     def test_existing_file_not_reseeded(self):
@@ -238,12 +240,13 @@ class StyleStorage(unittest.TestCase):
     def test_save_roundtrip_and_atomic(self):
         with _tmp_xdg():
             doc = cig._load_styles()
-            doc["styles"]["custom"] = "neon glow"
-            doc["default"] = "custom"
+            doc["styles"]["custom"] = {"kind": "style", "snippet": "neon glow",
+                                       "refs": []}
+            doc["default"] = ["custom"]
             cig._save_styles(doc)
             reread = cig._load_styles()
-            self.assertEqual(reread["styles"]["custom"], "neon glow")
-            self.assertEqual(reread["default"], "custom")
+            self.assertEqual(reread["styles"]["custom"]["snippet"], "neon glow")
+            self.assertEqual(reread["default"], ["custom"])
             # no leftover temp file beside the target
             self.assertEqual(list(cig._styles_path().parent.glob("*.tmp")), [])
 
@@ -292,7 +295,10 @@ class StyleCommand(unittest.TestCase):
             out = io.StringIO()
             with redirect_stdout(out):
                 self.assertEqual(cig._style_command(["show", "neon"]), 0)
-            self.assertEqual(out.getvalue().strip(), "neon glow")
+            text = out.getvalue()
+            self.assertIn("kind: style", text)
+            self.assertIn("snippet: neon glow", text)
+            self.assertIn("path:", text)
 
     def test_add_invalid_name_raises(self):
         with _tmp_xdg():
@@ -303,9 +309,9 @@ class StyleCommand(unittest.TestCase):
         with _tmp_xdg():
             cig._style_command(["add", "neon", "x"])
             cig._style_command(["use", "neon"])
-            self.assertEqual(cig._load_styles()["default"], "neon")
+            self.assertEqual(cig._load_styles()["default"], ["neon"])
             cig._style_command(["clear"])
-            self.assertEqual(cig._load_styles()["default"], "")
+            self.assertEqual(cig._load_styles()["default"], [])
 
     def test_rm_clears_default_if_pointed_there(self):
         with _tmp_xdg():
@@ -314,7 +320,7 @@ class StyleCommand(unittest.TestCase):
             cig._style_command(["rm", "neon"])
             doc = cig._load_styles()
             self.assertNotIn("neon", doc["styles"])
-            self.assertEqual(doc["default"], "")
+            self.assertEqual(doc["default"], [])
 
     def test_rm_unknown_raises(self):
         with _tmp_xdg():
@@ -354,7 +360,8 @@ class BuildWebText(unittest.TestCase):
         self.assertNotIn("auto", cig._build_web_text("x", "auto").lower())
 
     def test_edit_anchors_on_reference(self):
-        t = cig._build_web_text("make it blue", "auto", is_edit=True)
+        # character-only framing (the old is_edit==True case) → counts API.
+        t = cig._build_web_text("make it blue", "auto", n_character_refs=1)
         self.assertIn("attached", t.lower())
 
 
@@ -580,6 +587,270 @@ class Color(unittest.TestCase):
             self.assertIn("\033[33m", line)  # yellow
         finally:
             cig._use_color = real
+
+
+def _write_png(path) -> str:
+    """Write a tiny but valid-enough PNG (passes _sniff_mime). Returns the path."""
+    Path(path).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    return str(path)
+
+
+def _write_jpeg(path) -> str:
+    Path(path).write_bytes(b"\xff\xd8\xff" + b"\x00" * 64)
+    return str(path)
+
+
+class NormalizeDoc(unittest.TestCase):
+    """Legacy v1 → v2 normalization: bare-string entries become objects, a
+    string `default` becomes a list, version bumps to 2."""
+
+    def test_legacy_migration_on_load(self):
+        with _tmp_xdg():
+            p = cig._styles_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({
+                "version": 1,
+                "default": "watercolor",
+                "styles": {"watercolor": "soft watercolor"},
+            }), encoding="utf-8")
+            doc = cig._load_styles()
+            self.assertEqual(doc["version"], 2)
+            self.assertEqual(doc["default"], ["watercolor"])
+            entry = doc["styles"]["watercolor"]
+            self.assertEqual(entry, {"kind": "style",
+                                     "snippet": "soft watercolor", "refs": []})
+
+    def test_empty_string_default_becomes_empty_list(self):
+        self.assertEqual(
+            cig._normalize_doc({"default": "", "styles": {}})["default"], [])
+
+    def test_rewrite_bumps_version_on_disk(self):
+        with _tmp_xdg():
+            p = cig._styles_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps({
+                "version": 1, "default": "x",
+                "styles": {"x": "snip"},
+            }), encoding="utf-8")
+            cig._style_command(["use", "x"])           # any mutating command
+            on_disk = json.loads(p.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["version"], 2)
+            self.assertEqual(on_disk["default"], ["x"])
+            self.assertEqual(on_disk["styles"]["x"]["snippet"], "snip")
+
+
+class AssetAddRef(unittest.TestCase):
+    """add --ref copies the file in, normalizes the filename, and show lists it."""
+
+    def test_add_ref_copies_and_normalizes_name(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as src:
+            img = _write_png(os.path.join(src, "Weird Name.PNG"))
+            self.assertEqual(
+                cig._style_command(["add", "mascot", "a fox", "--ref", img,
+                                    "--kind", "character"]), 0)
+            doc = cig._load_styles()
+            entry = doc["styles"]["mascot"]
+            self.assertEqual(entry["kind"], "character")
+            self.assertEqual(entry["refs"], ["ref-1.png"])     # normalized
+            self.assertTrue((cig._asset_dir("mascot") / "ref-1.png").is_file())
+
+    def test_add_requires_snippet_or_ref(self):
+        with _tmp_xdg():
+            with self.assertRaises(SystemExit):
+                cig._style_command(["add", "empty"])
+
+    def test_add_ref_then_rm_ref(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as src:
+            a = _write_png(os.path.join(src, "a.png"))
+            b = _write_jpeg(os.path.join(src, "b.jpg"))
+            cig._style_command(["add", "mascot", "--ref", a, "--kind", "character"])
+            cig._style_command(["add-ref", "mascot", b])
+            entry = cig._load_styles()["styles"]["mascot"]
+            self.assertEqual(entry["refs"], ["ref-1.png", "ref-2.jpg"])
+            self.assertTrue((cig._asset_dir("mascot") / "ref-2.jpg").is_file())
+            cig._style_command(["rm-ref", "mascot", "ref-1.png"])
+            entry = cig._load_styles()["styles"]["mascot"]
+            self.assertEqual(entry["refs"], ["ref-2.jpg"])
+            self.assertFalse((cig._asset_dir("mascot") / "ref-1.png").exists())
+
+    def test_rm_ref_unknown_file_raises(self):
+        with _tmp_xdg():
+            cig._style_command(["add", "mascot", "snip"])
+            with self.assertRaises(SystemExit):
+                cig._style_command(["rm-ref", "mascot", "nope.png"])
+
+
+class ResolveActiveStyles(unittest.TestCase):
+    def _doc(self):
+        return cig._normalize_doc({
+            "default": ["a", "b"],
+            "styles": {"a": {"kind": "character", "snippet": "", "refs": []},
+                       "b": "snip-b", "c": "snip-c"},
+        })
+
+    def test_falls_back_to_default_list(self):
+        self.assertEqual(
+            cig._resolve_active_styles(self._doc(), style_args=None,
+                                       no_style=False), ["a", "b"])
+
+    def test_explicit_styles_override_default_in_order(self):
+        self.assertEqual(
+            cig._resolve_active_styles(self._doc(), style_args=["c", "a"],
+                                       no_style=False), ["c", "a"])
+
+    def test_no_style_empties(self):
+        self.assertEqual(
+            cig._resolve_active_styles(self._doc(), style_args=["a"],
+                                       no_style=True), [])
+
+    def test_unknown_raises(self):
+        with self.assertRaises(SystemExit):
+            cig._resolve_active_styles(self._doc(), style_args=["ghost"],
+                                       no_style=False)
+
+
+class CollectRefsOrdering(unittest.TestCase):
+    """Partition + ordering: character group first (assets then ad-hoc), then
+    the style group."""
+
+    def test_partition_and_order(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as src:
+            ch = _write_png(os.path.join(src, "ch.png"))
+            st = _write_png(os.path.join(src, "st.png"))
+            cig._style_command(["add", "ch", "--ref", ch, "--kind", "character"])
+            cig._style_command(["add", "st", "--ref", st, "--kind", "style"])
+            doc = cig._load_styles()
+            # active order deliberately style-first to prove repartition.
+            ordered = cig._collect_refs(doc, ["st", "ch"], ["/adhoc.png"])
+            groups = [r["group"] for r in ordered]
+            self.assertEqual(groups, ["character", "character", "style"])
+            ch_path = str(cig._asset_dir("ch") / "ref-1.png")
+            st_path = str(cig._asset_dir("st") / "ref-1.png")
+            self.assertEqual([r["ref"] for r in ordered],
+                             [ch_path, "/adhoc.png", st_path])
+
+    def test_missing_ref_file_raises_naming_asset_and_path(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as src:
+            img = _write_png(os.path.join(src, "x.png"))
+            cig._style_command(["add", "ch", "--ref", img, "--kind", "character"])
+            # delete the copied byte on disk → load still lists the ref name
+            (cig._asset_dir("ch") / "ref-1.png").unlink()
+            doc = cig._load_styles()
+            with self.assertRaises(SystemExit) as ctx:
+                cig._collect_refs(doc, ["ch"], None)
+            msg = str(ctx.exception)
+            self.assertIn("ch", msg)
+            self.assertIn("ref-1.png", msg)
+
+
+class RefCap(unittest.TestCase):
+    def test_caps_and_reports_dropped(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as src:
+            refs = [_write_png(os.path.join(src, f"r{i}.png")) for i in range(6)]
+            cmd = ["add", "many", "--kind", "character"]
+            for r in refs:
+                cmd += ["--ref", r]
+            cig._style_command(cmd)
+            doc = cig._load_styles()
+            ordered = cig._collect_refs(doc, ["many"], None)
+            self.assertEqual(len(ordered), 6)
+            kept, dropped = cig._cap_refs(ordered, cig.REF_ATTACH_CAP)
+            self.assertEqual(len(kept), cig.REF_ATTACH_CAP)
+            self.assertEqual(len(dropped), 6 - cig.REF_ATTACH_CAP)
+            # the dropped ones are the trailing refs, identifiable by label
+            self.assertTrue(all("many/ref-" in r["label"] for r in dropped))
+
+
+class ResetWipesAssets(unittest.TestCase):
+    def test_reset_deletes_asset_tree(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as src:
+            img = _write_png(os.path.join(src, "x.png"))
+            cig._style_command(["add", "mascot", "--ref", img, "--kind", "character"])
+            self.assertTrue(cig._asset_dir("mascot").is_dir())
+            self.assertEqual(cig._style_command(["reset", "-y"]), 0)
+            self.assertFalse(cig._asset_dir("mascot").exists())
+            self.assertFalse(cig._assets_root().exists())
+            doc = cig._load_styles()
+            self.assertIn("doodle", doc["styles"])     # built-ins back
+
+
+class FromLast(unittest.TestCase):
+    def test_record_then_read_roundtrip(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as d:
+            img = Path(_write_png(os.path.join(d, "out.png")))
+            cig._record_last_output(img)
+            self.assertEqual(cig._read_last_output(), img.resolve())
+
+    def test_pin_from_last(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as d:
+            img = Path(_write_png(os.path.join(d, "out.png")))
+            cig._record_last_output(img)
+            self.assertEqual(
+                cig._style_command(["add", "pinned", "--from-last",
+                                    "--kind", "character"]), 0)
+            entry = cig._load_styles()["styles"]["pinned"]
+            self.assertEqual(entry["refs"], ["ref-1.png"])
+            self.assertTrue((cig._asset_dir("pinned") / "ref-1.png").is_file())
+
+    def test_from_last_absent_errors(self):
+        with _tmp_xdg():
+            with self.assertRaises(SystemExit):
+                cig._style_command(["add", "x", "--from-last"])
+
+    def test_from_last_file_gone_errors(self):
+        with _tmp_xdg(), tempfile.TemporaryDirectory() as d:
+            img = Path(_write_png(os.path.join(d, "out.png")))
+            cig._record_last_output(img)
+            img.unlink()
+            with self.assertRaises(SystemExit):
+                cig._style_command(["add", "x", "--from-last"])
+
+
+class PromptWordingByKind(unittest.TestCase):
+    """The three instruction framings keyed off (n_character_refs, n_style_refs)."""
+
+    def test_style_only(self):
+        t = cig._build_web_text("a cat", "auto", n_character_refs=0, n_style_refs=2)
+        self.assertIn("Match the visual style", t)
+        self.assertIn("do NOT copy", t)
+        self.assertNotIn("recurring character", t)
+        u = cig._build_user_text("a cat", "auto", "png",
+                                 n_character_refs=0, n_style_refs=2)
+        self.assertIn("visual style", u)
+        self.assertIn("do not copy their content", u)
+        self.assertNotIn("recurring character", u)
+
+    def test_character_only(self):
+        t = cig._build_web_text("a cat", "auto", n_character_refs=1, n_style_refs=0)
+        self.assertIn("canonical subject", t)
+        self.assertNotIn("recurring character", t)
+        u = cig._build_user_text("a cat", "auto", "png",
+                                 n_character_refs=1, n_style_refs=0)
+        self.assertIn("canonical subject", u)
+
+    def test_mixed(self):
+        t = cig._build_web_text("a cat", "auto", n_character_refs=1, n_style_refs=2)
+        self.assertIn("recurring character", t)
+        self.assertIn("style references", t)
+        u = cig._build_user_text("a cat", "auto", "png",
+                                 n_character_refs=1, n_style_refs=2)
+        self.assertIn("recurring character", u)
+        self.assertIn("style references", u)
+
+    def test_payload_tool_choice_required_for_style_only(self):
+        payload = cig._build_payload(
+            "a cat", "auto", "png", "gpt-5.5",
+            refs=[("Zm9v", "image/png")], n_character_refs=0, n_style_refs=1)
+        self.assertEqual(payload["tool_choice"], "required")
+
+
+class StylesAlias(unittest.TestCase):
+    def test_use_accepts_multiple(self):
+        with _tmp_xdg():
+            cig._style_command(["add", "a", "x"])
+            cig._style_command(["add", "b", "y"])
+            cig._style_command(["use", "a", "b"])
+            self.assertEqual(cig._load_styles()["default"], ["a", "b"])
 
 
 if __name__ == "__main__":
