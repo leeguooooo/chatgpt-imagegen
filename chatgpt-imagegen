@@ -52,13 +52,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.16.0]: 新增两个内置风格——xiaohei(Ian 小黑手绘讲解风,适合中文文章配图)和 snoopy(Peanuts 报纸漫画风);--style 即用
 # WHATSNEW[0.15.0]: 可固定角色/画风——style 资产现在能绑参考图(--ref/--from-last),角色与画风可叠加(--style 可重复)
 # WHATSNEW[0.14.0]: 更新提示现在会列出每个新版本改了什么,而不只是「有新版」
 # WHATSNEW[0.13.0]: 新增每天一次的新版本提示(doctor 显示版本差异);可用 CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1 关闭
@@ -2086,6 +2087,33 @@ _BUILTIN_STYLES = {
         "Low-res, smeared together pixel by pixel, showing off just how absurdly "
         "bad it is. Honestly, draw it however you want — but the content must "
         "still be readable."
+    ),
+    "xiaohei": (
+        "Ian 'Xiaohei' (小黑) hand-drawn explainer style. Pure white background — "
+        "NO paper texture, beige, shadows, or gradients. Thin hand-drawn black "
+        "ink linework with a slight hand-wobble, and lots of whitespace (the "
+        "subject fills only ~40-60% of the frame). Express ONE single idea: an "
+        "absurd machine, contraption, or metaphor. The protagonist is 小黑 — a "
+        "solid matte-black blob figure with two small white dot eyes, thin stick "
+        "legs, and a blank expression — actively operating the contraption, never "
+        "a decorative mascot in a corner. Add a few sparse handwritten Chinese "
+        "annotation labels in red, orange, and blue with thin hand-drawn arrows "
+        "pointing at parts of the scene. Weird, witty, and clean, but never cute "
+        "or childish. 16:9 landscape. (For the strongest match, pin a few example "
+        "images as references: `style add-ref xiaohei <img>`.)"
+    ),
+    "snoopy": (
+        "Classic mid-20th-century American newspaper comic-strip look, in the "
+        "gentle spirit of the Peanuts / Snoopy Sunday funnies. Simple, clean, "
+        "slightly wobbly thin black pen-ink outlines, as if hand-inked with a "
+        "nib. Characters are round-headed and minimalist — big heads, small "
+        "squat bodies, tiny dot eyes, and simple curved-line mouths and "
+        "eyebrows that carry all the expression. Flat cel-style fills in a "
+        "limited, slightly muted retro palette — no gradients, no rendering, no "
+        "shadows. Lots of clean white space and sparse, minimal backgrounds (a "
+        "single horizon line, a few simple props). Warm, wholesome, a touch "
+        "wistful and funny. Hand-lettered feel for any text. Keep it charming "
+        "and simple, never detailed or photorealistic."
     ),
 }
 

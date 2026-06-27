@@ -109,7 +109,7 @@ chatgpt-imagegen "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg
 
 ## 风格
 
-**风格(资产)**是可复用的「外观」,用 `--style NAME` 套用 —— 一段文字片段**和/或钉住的参考图**。两种 kind:`--kind style`(学画风,别抄内容)和 `--kind character`(还原一个固定主体 —— 你的吉祥物/角色)。把自己的卡通形象或品牌画风**钉一次**,以后无需每次再传 `--ref`;`--style` 可重复,于是角色和画风能**叠加**。用 `style` 子命令管理(`list` / `show` / `add` / `add-ref` / `rm-ref` / `rm` / `use` / `clear` / `reset`),存在 `~/.config/chatgpt-imagegen/styles.json`,图片复制进 `assets/`。
+**风格(资产)**是可复用的「外观」,用 `--style NAME` 套用 —— 一段文字片段**和/或钉住的参考图**。两种 kind:`--kind style`(学画风,别抄内容)和 `--kind character`(还原一个固定主体 —— 你的吉祥物/角色)。内置三个风格:`doodle`、`xiaohei`(Ian 小黑手绘讲解风)和 `snoopy`(经典 Peanuts 报纸漫画风)。把自己的卡通形象或品牌画风**钉一次**,以后无需每次再传 `--ref`;`--style` 可重复,于是角色和画风能**叠加**。用 `style` 子命令管理(`list` / `show` / `add` / `add-ref` / `rm-ref` / `rm` / `use` / `clear` / `reset`),存在 `~/.config/chatgpt-imagegen/styles.json`,图片复制进 `assets/`。
 
 ```bash
 chatgpt-imagegen "a robot mascot" --style doodle           # 文字风格,单次

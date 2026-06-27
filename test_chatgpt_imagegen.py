@@ -226,6 +226,9 @@ class StyleStorage(unittest.TestCase):
             self.assertEqual(doc["default"], [])          # v2: default is a list
             self.assertIn("doodle", doc["styles"])
             self.assertEqual(doc["styles"]["doodle"]["kind"], "style")  # normalized
+            for _b in ("xiaohei", "snoopy"):              # shipped built-ins
+                self.assertIn(_b, doc["styles"])
+                self.assertEqual(doc["styles"][_b]["kind"], "style")
             self.assertTrue(cig._styles_path().exists())  # seeded to disk
 
     def test_existing_file_not_reseeded(self):
