@@ -52,13 +52,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.16.0"
+__version__ = "0.16.1"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.16.1]: 新内置风格现在会自动补进老配置(不再只对全新安装生效;已删除的内置不会被复活)
 # WHATSNEW[0.16.0]: 新增两个内置风格——xiaohei(Ian 小黑手绘讲解风,适合中文文章配图)和 snoopy(Peanuts 报纸漫画风);--style 即用
 # WHATSNEW[0.15.0]: 可固定角色/画风——style 资产现在能绑参考图(--ref/--from-last),角色与画风可叠加(--style 可重复)
 # WHATSNEW[0.14.0]: 更新提示现在会列出每个新版本改了什么,而不只是「有新版」
@@ -2362,7 +2363,43 @@ def _default_styles_doc() -> dict:
     # version 2: entries are {kind, snippet, refs} objects and `default` is a
     # list. Built-ins are seeded as bare strings (a legacy shape that
     # `_normalize_doc` upgrades on load) so the on-disk seed stays minimal.
-    return {"version": 2, "default": [], "styles": _builtin_styles()}
+    # `seeded` records which built-ins have ever been delivered, so a later
+    # release can add a NEW built-in to existing configs without resurrecting
+    # ones the user deleted (see `_merge_new_builtins`).
+    return {"version": 2, "default": [], "styles": _builtin_styles(),
+            "seeded": sorted(_BUILTIN_STYLES)}
+
+
+def _merge_new_builtins(doc: dict) -> bool:
+    """Add built-ins the user has never been offered into an existing config.
+
+    This is what makes shipping a NEW built-in style actually reach existing
+    installs: built-ins are seeded only when the file is first created, so
+    without this a new `_BUILTIN_STYLES` entry would never appear for anyone who
+    already has a styles.json.
+
+    `doc["seeded"]` is the set of built-in names ever delivered. A built-in is
+    added only if it's not in `seeded` AND not already present. A deletion (the
+    `rm` verb) leaves the name in `seeded`, so a removed built-in stays removed.
+    For a legacy doc with no `seeded` field, the baseline is the built-ins
+    currently present — so we never resurrect one the user had deleted, while
+    genuinely new built-ins still arrive. Returns True if it mutated the doc.
+    """
+    styles = doc.setdefault("styles", {})
+    seeded = doc.get("seeded")
+    if not isinstance(seeded, list):
+        seeded = [b for b in _BUILTIN_STYLES if b in styles]
+    seeded_set = {s for s in seeded if isinstance(s, str)}
+    changed = False
+    for name, snippet in _BUILTIN_STYLES.items():
+        if name not in seeded_set and name not in styles:
+            styles[name] = _normalize_entry(snippet)
+            changed = True
+    new_seeded = sorted(seeded_set | set(_BUILTIN_STYLES))
+    if doc.get("seeded") != new_seeded:
+        doc["seeded"] = new_seeded
+        changed = True
+    return changed
 
 
 def _normalize_entry(value: Any) -> dict:
@@ -2439,7 +2476,16 @@ def _load_styles() -> dict:
             f"Fix it by hand or run `chatgpt-imagegen style reset`.")
     # Normalize immediately so every downstream site sees v2 objects + a list
     # `default` — legacy bare-string entries and a string `default` included.
-    return _normalize_doc(doc)
+    doc = _normalize_doc(doc)
+    # Deliver any built-in the user has never been offered (e.g. a style added in
+    # a newer release), persisting once so it sticks. Best-effort: a read-only
+    # filesystem must never make `_load_styles` fail.
+    if _merge_new_builtins(doc):
+        try:
+            _save_styles(doc)
+        except OSError:
+            pass
+    return doc
 
 
 def _die_unknown_style(name: str, styles: dict) -> None:

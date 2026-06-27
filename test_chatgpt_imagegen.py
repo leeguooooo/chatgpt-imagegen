@@ -240,6 +240,26 @@ class StyleStorage(unittest.TestCase):
             again = cig._load_styles()
             self.assertNotIn("doodle", again["styles"])  # stays deleted
 
+    def test_new_builtin_merges_into_existing_config(self):
+        # A legacy config (no `seeded`, missing a built-in we now ship) should
+        # gain the new built-in on next load — that's how a shipped style reaches
+        # existing installs.
+        with _tmp_xdg():
+            cig._save_styles({"version": 2, "default": [],
+                              "styles": {"mine": {"kind": "style",
+                                                  "snippet": "x", "refs": []}}})
+            doc = cig._load_styles()
+            self.assertIn("snoopy", doc["styles"])     # new built-in delivered
+            self.assertIn("mine", doc["styles"])       # user style untouched
+            self.assertIn("snoopy", doc["seeded"])     # recorded as delivered
+
+    def test_deleted_builtin_not_resurrected_by_merge(self):
+        with _tmp_xdg():
+            cig._load_styles()                         # seed (writes `seeded`)
+            self.assertEqual(cig._style_command(["rm", "snoopy"]), 0)
+            again = cig._load_styles()
+            self.assertNotIn("snoopy", again["styles"])  # rm kept it in `seeded`
+
     def test_save_roundtrip_and_atomic(self):
         with _tmp_xdg():
             doc = cig._load_styles()
