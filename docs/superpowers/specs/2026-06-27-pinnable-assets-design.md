@@ -6,9 +6,11 @@
 
 ## Problem
 
+> **Subcommand name:** the existing verb is **`style`** (singular) — `main()` dispatches on `sys.argv[1] == "style"` and `_style_command` sets `prog="chatgpt-imagegen style"`. This spec keeps `style` as canonical and adds a `styles` alias in the `main()` dispatch + help epilog (cheap, reads naturally). All command examples below use `style`.
+
 Today the CLI has two half-features that don't connect:
 
-- **Text styles** (`styles add/use/...`, stored in `~/.config/chatgpt-imagegen/styles.json`): named *text* snippets appended to every prompt. Reusable, but words only.
+- **Text styles** (`style add/use/...`, stored in `~/.config/chatgpt-imagegen/styles.json`): named *text* snippets appended to every prompt. Reusable, but words only.
 - **`--ref` (img2img)**: attach one or more reference images per generation, on both the `web` and `codex` backends. Powerful, but the user must pass the image path on **every** invocation.
 
 Users who have a custom cartoon character or a signature art style want to **pin it once and reuse it** — without re-typing a `--ref` each time. The goal is character consistency (the same mascot recurs across scenes) AND style consistency (a uniform aesthetic), and the two must be **stackable** (e.g. "my mascot" + "watercolor" at once).
@@ -44,12 +46,22 @@ This was chosen over (B) a separate `character` namespace (two vocabularies, dup
 }
 ```
 
-**Read compatibility rules:**
-- A `styles[name]` value that is a `str` → normalized in-memory to `{kind: "style", snippet: <str>, refs: []}`.
-- A `default` value that is a `str` → normalized to `[]` if empty, else `[<str>]`.
-- `version` bumped to 2; an existing version-1 file is upgraded in memory on read and rewritten on the next mutating command (no destructive auto-migration on plain reads).
+**Read compatibility — normalization is centralized so all downstream code sees objects.**
+`_load_styles` runs a new `_normalize_doc(doc)` immediately after parsing:
+- Every `styles[name]` value that is a `str` → `{kind: "style", snippet: <str>, refs: []}`.
+- A `default` value that is a `str` → `[]` if empty, else `[<str>]`.
+- `version` set to 2 in memory; the upgraded shape is rewritten on the next mutating command (no destructive auto-migration on plain reads).
+
+This is required because three current sites assume the value is a `str` and will crash on an object — they all read post-normalization after this change:
+- generation hot path (~line 2581): change `_styles_doc["styles"][name]` → `entry["snippet"]`.
+- `style list` (~line 2240): `styles[name].split()` → operate on `entry["snippet"]`.
+- `style show` (~line 2253): `print(styles[name])` → print snippet + kind + refs.
+
+`_default_styles_doc()` (~line 2146) must change from `{"version": 1, "default": ""}` to `{"version": 2, "default": []}`, because `_load_styles` writes it on first run **and** `reset` writes it (~line 2302) — otherwise fresh installs and resets produce v1 string-default docs that contradict the data model.
 
 **Validation:** `kind ∈ {character, style}`; names keep the existing `_STYLE_NAME_RE` slug rule; an entry must have a non-empty `snippet` OR at least one ref.
+
+(`watercolor`/`mascot` above are illustrative user-created assets; the only seeded built-in today is `doodle`.)
 
 ## Asset library on disk
 
@@ -62,23 +74,23 @@ This was chosen over (B) a separate `character` namespace (two vocabularies, dup
       ref-2.png
 ```
 
-- `add` / `add-ref` **copy** the source image into `assets/<name>/`, validating the image type (reuse the existing PNG/JPEG/WEBP check) and downsizing oversized images with `sips` (reuse the existing `_downsize_reference` path). Copied filenames are normalized to `ref-<n>.<ext>` to avoid collisions.
+- `add` / `add-ref` **copy** the source image into `assets/<name>/`, validating the type with `_sniff_mime` (PNG/JPEG/WEBP) and downsizing oversized images by calling `_downsize_reference` (~line 426) **directly**. Do **not** route library copies through `_load_reference` (~line 384) — that helper is codex-only (base64s, only downsizes over `REF_B64_BUDGET`). Copied filenames are normalized to `ref-<n>.<ext>` to avoid collisions.
 - `rm` deletes the asset's directory along with its entry.
 - `reset` wipes the entire `assets/` tree along with re-seeding built-ins (guarded by the existing `-y/--yes` confirmation).
 
-## Commands (all under the existing `styles` subcommand)
+## Commands (all under the existing `style` subcommand; `styles` is an alias)
 
 | Command | Behavior |
 |---|---|
-| `styles add <name> [snippet] [--ref IMG]... [--kind character\|style]` | Create/overwrite an asset. Must supply a `snippet` and/or at least one `--ref`. `--kind` defaults to `style`. Copies refs into the library. |
-| `styles add-ref <name> <img>...` | Append image(s) to an existing asset. |
-| `styles rm-ref <name> <file>` | Remove one image (by stored filename) from an asset. |
-| `styles show <name>` | Print kind + snippet + ref filenames + the asset directory path. |
-| `styles list` | List entries marking `kind`, a `📎N` image badge, and the active `*` markers. |
-| `styles use <name>...` | Set the active default set (**accepts multiple names** → they stack). |
-| `styles clear` | Empty the active default set. |
-| `styles rm <name>` | Delete entry + asset dir. |
-| `styles reset [-y]` | Re-seed built-ins and wipe `assets/`. |
+| `style add <name> [snippet] [--ref IMG]... [--kind character\|style]` | Create/overwrite an asset. `snippet` becomes `nargs="?"` (currently required positional, ~line 2217); must supply a `snippet` and/or at least one `--ref`. `--kind` defaults to `style`. Copies refs into the library. |
+| `style add-ref <name> <img>...` | Append image(s) to an existing asset. |
+| `style rm-ref <name> <file>` | Remove one image (by stored filename) from an asset. |
+| `style show <name>` | Print kind + snippet + ref filenames + the asset directory path. |
+| `style list` | List entries marking `kind`, a `📎N` image badge, and the active `*` markers. |
+| `style use <name>...` | Set the active default set (**accepts multiple names** → they stack). |
+| `style clear` | Empty the active default set. |
+| `style rm <name>` | Delete entry + asset dir. |
+| `style reset [-y]` | Re-seed built-ins and wipe `assets/`. |
 
 Generation side:
 - `--style NAME` becomes **repeatable** (`action="append"`); multiple values stack.
@@ -98,8 +110,8 @@ At generation time:
 
 1. Resolve the active asset set (per resolution rule above).
 2. Partition into a **character group** and a **style group** by each asset's `kind`.
-3. Collect reference image files, ordered **character refs first, then style refs**; the user's ad-hoc `--ref` images are treated as character/subject (preserving current `is_edit` behavior) and ordered with the character group.
-4. Append snippets to the prompt text (character snippets and style snippets both joined via the existing `_compose_prompt` comma-suffix logic).
+3. Collect reference image files in a deterministic order: **character group first, then style group**. Within the character group, order is: character assets in `--style`/`default` append order, then the user's ad-hoc `--ref` images last (ad-hoc refs are treated as character/subject, preserving current `is_edit` behavior). Within the style group: `--style`/`default` append order.
+4. Append snippets to the prompt text. `_compose_prompt` takes a single snippet (~line 2028), so stacking = **repeated application** (fold over the ordered snippets); the trailing-comma trim still behaves under repetition.
 5. Build the model instruction from the **counts** `(n_character_refs, n_style_refs)`, replacing the binary `is_edit`:
    - **Style only:** "Match the visual style of the attached reference image(s); do **not** copy their content."
    - **Character only:** (current behavior) "Reproduce the character shown in the reference image(s) as the canonical subject … Scene: `<prompt>`."
@@ -108,7 +120,11 @@ At generation time:
    - **web:** `_upload_references` uploads the files (already real files on disk in `assets/<name>/`) in order.
    - **codex:** attach as `input_image` content parts in the same order, with `tool_choice: required`.
 
-The text builders (`_build_web_text`, `_build_user_text`, and the codex instruction) are refactored to accept `(n_character_refs, n_style_refs)` instead of the single `is_edit` boolean. `is_edit == True` maps to "character-only" so existing `--ref`-only behavior is unchanged.
+The text builders (`_build_web_text` ~456, `_build_user_text` ~481) are refactored to accept `(n_character_refs, n_style_refs)` instead of the single `is_edit` boolean. `is_edit == True` (ad-hoc `--ref` only) maps to "character-only" so existing behavior is unchanged. The counts must be threaded through **all** call sites, not just the builders:
+- `_build_payload` (~521, derives `is_edit = bool(refs)` and sets `tool_choice`) and its caller (~1867).
+- the web call site (~1469).
+
+`tool_choice` stays `"required"` whenever any reference is attached — including style-only, since images are still attached and the tool must fire.
 
 ## Error handling & limits
 
@@ -130,6 +146,10 @@ The text builders (`_build_web_text`, `_build_user_text`, and the codex instruct
 - Missing ref file → `SystemExit` with the asset/path in the message.
 - `reset` wipes `assets/`.
 - `--from-last`: records last output on generation; pins it; clear error when absent.
+
+## Implementation note
+
+The change touches widely separated regions of the single file — text builders (~456/481/513), web upload + codex ref load (~1469/1610/1857), the whole styles block (~2007–2306), and the main argparser + post-write last-output recording (~2455–2608). These must be done by **one implementer or strictly sequentially** — parallel edits to the one file collide. The `--from-last` recording has exactly one write site (~line 2608, `out_path.write_bytes`); the `style` subcommand returns early (~2442) so it correctly never records.
 
 ## Out of scope (YAGNI)
 
