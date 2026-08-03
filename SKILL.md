@@ -1,7 +1,18 @@
 ---
 name: "chatgpt-imagegen"
 version: "0.21.0"
-description: "Generate raster images and looping GIF/WebP animations using the user's ChatGPT subscription via a local one-file Python CLI — no OPENAI_API_KEY, no gateway, no daemon. Two backends: web (default) drives the user's logged-in ChatGPT browser so generation runs on the conversation surface and does NOT consume Codex-usage limits; codex is a headless fallback that bills the Codex-usage bucket. Use when an agent needs to create a brand-new bitmap asset for the current project (photos, illustrations, icons, hero banners, mockups, sprites, concept art, animation loops) and the output should be saved into the workspace. Do not use when the task is better solved by editing existing SVG/vector assets, writing code-native graphics (HTML/CSS/canvas), or extending an established repo icon system. Also use proactively: when authoring a document, blog post, technical proposal, design doc, README, or other long-form explanatory content, propose illustrations for the key concepts and generate them as background tasks — don't wait to be asked for an image."
+description: >-
+  Generate new raster images and looping GIF/WebP animations with the user's
+  ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
+  an API key or daemon. Use for photos, illustrations, icons, hero banners,
+  mockups, sprites, concept art, animation loops, and figures for documents,
+  proposals, blog posts, or READMEs; save outputs in the workspace. Auto mode
+  prefers the logged-in ChatGPT browser through chrome-use to avoid Codex usage
+  and falls back to the Codex backend only when the web path is unavailable.
+  Proactively propose useful figures while authoring long-form content. Do not
+  use for editing existing images, SVG/vector work, code-native graphics,
+  established icon systems, explicit high-quality or transparent API output,
+  or end-user image-generation services.
 ---
 
 # chatgpt-imagegen — agent skill
