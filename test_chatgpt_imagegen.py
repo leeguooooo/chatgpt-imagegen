@@ -1821,5 +1821,140 @@ class SslContext(unittest.TestCase):
                          default & ~ssl.VERIFY_X509_STRICT)
 
 
+class GeminiPromptFraming(unittest.TestCase):
+    """Style references must not become the subject.
+
+    Regression guard for a real failure: an agy run that described every
+    attached reference as "the subject" answered a prompt about a green glass
+    bottle with a four-panel comic strip of the style reference's cartoon dog.
+    """
+
+    def test_style_refs_are_not_the_subject(self):
+        t = cig._build_reference_framing(0, 2)
+        self.assertIn("do NOT copy their content", t)
+        self.assertNotIn("as the subject", t)
+
+    def test_character_refs_are_reproduced(self):
+        self.assertIn("canonical subject", cig._build_reference_framing(1, 0))
+
+    def test_mixed_refs_spell_out_the_split(self):
+        t = cig._build_reference_framing(2, 3)
+        self.assertIn("first 2", t)
+        self.assertIn("remaining 3", t)
+
+    def test_no_refs_yields_no_framing(self):
+        self.assertEqual(cig._build_reference_framing(0, 0), "")
+
+    def test_gemini_text_carries_the_prompt_and_style_framing(self):
+        t = cig._build_gemini_text("a green glass bottle", "1024x1024",
+                                   n_character_refs=0, n_style_refs=1)
+        self.assertIn("a green glass bottle", t)
+        self.assertIn("do NOT copy their content", t)
+        self.assertIn("square 1:1", t)
+
+    def test_gemini_asks_for_a_ratio_even_on_auto(self):
+        # Silence is not neutral here: with no ratio requested Gemini defaults
+        # to 16:9 (five probe runs, all 1024x559). Asking for square is the
+        # less surprising default for a caller who specified no shape.
+        self.assertIn("square 1:1", cig._build_gemini_text("x", "auto"))
+
+    def test_gemini_honours_each_named_size(self):
+        for size, want in (("1024x1024", "square 1:1"),
+                           ("1024x1536", "portrait 2:3"),
+                           ("1536x1024", "landscape 3:2")):
+            self.assertIn(want, cig._build_gemini_text("x", size))
+
+
+class GeminiImageToolLabels(unittest.TestCase):
+    """The image-tool switch matches on localised menu text."""
+
+    def test_the_observed_chinese_label_is_covered(self):
+        # This is the exact string read off the live menu; it is the one label
+        # verified to work, so it must not be dropped in a future tidy-up.
+        self.assertIn("制作图片", cig.GEMINI_IMAGE_TOOL_LABELS)
+
+    def test_english_label_is_covered(self):
+        self.assertIn("Create image", cig.GEMINI_IMAGE_TOOL_LABELS)
+
+
+class GeminiImageSrcMatching(unittest.TestCase):
+    """The result regex has to reject Google's own avatars.
+
+    gemini.google.com serves the generated image AND the account avatar off
+    googleusercontent.com; matching the bare host grabs the avatar instead.
+    """
+
+    def _m(self, src):
+        return re.search(cig.GEMINI_IMG_SRC_RE, src) is not None
+
+    def test_blob_result_matches(self):
+        self.assertTrue(self._m("blob:https://gemini.google.com/dd0d-3e3f"))
+
+    def test_account_avatar_is_rejected(self):
+        self.assertFalse(self._m(
+            "https://lh3.googleusercontent.com/a/ACg8ocJ2KygVENyOIg=s64-c-v1-rj"))
+
+    def test_profile_chip_is_rejected(self):
+        self.assertFalse(self._m(
+            "https://lh3.google.com/u/0/ogw/AF2bZyhScQBt51px0SmUvlC8=s64-c-mo"))
+
+
+class AgyOutputHandling(unittest.TestCase):
+    """agy reports where it saved the file; it does not obey a path we pick."""
+
+    def test_path_is_read_from_a_file_url(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as fh:
+            out = f"Saved it as [teapot.png](file://{fh.name}) for you."
+            self.assertEqual(cig._agy_extract_path(out), fh.name)
+
+    def test_bare_absolute_path_on_the_last_line(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as fh:
+            self.assertEqual(cig._agy_extract_path(f"done\n{fh.name}\n"), fh.name)
+
+    def test_nonexistent_path_is_not_accepted(self):
+        self.assertIsNone(cig._agy_extract_path("/nope/does/not/exist.png"))
+
+    def test_prose_only_reply_yields_nothing(self):
+        self.assertIsNone(cig._agy_extract_path("I could not generate that."))
+
+
+class GeminiBackendsAreOptIn(unittest.TestCase):
+    """auto must never route to a different vendor's account on its own."""
+
+    def test_auto_pick_never_returns_gemini_or_agy(self):
+        for web, codex in ((True, True), (True, False),
+                           (False, True), (False, False)):
+            self.assertIn(cig._auto_backend_pick(web, codex),
+                          ("web", "codex", "neither"))
+
+    def test_both_backends_are_selectable_by_name(self):
+        src = Path(cig.__file__).read_text()
+        self.assertIn('"auto", "web", "codex", "gemini", "agy"', src)
+
+
+class GoogleProfileDetection(unittest.TestCase):
+    """The Google scan must differ from the chatgpt.com one in the cookie only."""
+
+    def test_it_queries_google_session_cookies(self):
+        seen = {}
+
+        def fake(host_like, name_clause):
+            seen["host"] = host_like
+            seen["name"] = name_clause
+            return ["Profile 12"]
+
+        with unittest.mock.patch.object(cig, "_detect_logged_in_profiles", fake):
+            self.assertEqual(cig._detect_google_profiles(), ["Profile 12"])
+        self.assertIn("google.com", seen["host"])
+        self.assertIn("__Secure-1PSID", seen["name"])
+
+    def test_chatgpt_detection_defaults_are_unchanged(self):
+        import inspect
+        sig = inspect.signature(cig._detect_logged_in_profiles)
+        self.assertEqual(sig.parameters["host_like"].default, "%chatgpt.com%")
+        self.assertIn("__Secure-next-auth.session-token",
+                      sig.parameters["name_clause"].default)
+
+
 if __name__ == "__main__":
     unittest.main()

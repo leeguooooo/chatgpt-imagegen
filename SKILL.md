@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.21.3"
+version: "0.22.0"
 description: >-
   Generate new raster images and looping GIF/WebP animations with the user's
   ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
@@ -9,6 +9,7 @@ description: >-
   proposals, blog posts, or READMEs; save outputs in the workspace. Auto mode
   prefers the logged-in ChatGPT browser through chrome-use to avoid Codex usage
   and falls back to the Codex backend only when the web path is unavailable.
+  Users with a Gemini subscription can name --backend gemini or agy instead.
   Proactively propose useful figures while authoring long-form content. Do not
   use for editing existing images, SVG/vector work, code-native graphics,
   established icon systems, explicit high-quality or transparent API output,
@@ -17,7 +18,7 @@ description: >-
 
 # chatgpt-imagegen — agent skill
 
-A standalone Python CLI that produces images via the user's ChatGPT subscription. No API key, no network service, no extra config. It has **two backends** that hit different OpenAI usage buckets — pick with `--backend`.
+A standalone Python CLI that produces images via the user's ChatGPT subscription. No API key, no network service, no extra config. It has **two OpenAI backends** that hit different usage buckets — pick with `--backend` — plus **two opt-in Google/Gemini backends** for users who also have a Gemini subscription.
 
 ## Backends
 
@@ -32,6 +33,28 @@ A standalone Python CLI that produces images via the user's ChatGPT subscription
 - **codex not logged in** (`~/.codex/auth.json` absent) → auto still uses web; codex is only the fallback.
 
 Auto does **not** fall back to codex if web was reachable but the generation itself failed after submitting — that would spend the very bucket auto-mode protects. In that case it errors and tells you to rerun with `--backend codex` if you want the Codex-usage path. Force a single backend with `--backend web` or `--backend codex`.
+
+### Gemini backends (opt-in — `auto` never picks them)
+
+For users who also have a **Google/Gemini** subscription. Both drive a Google account, not OpenAI.
+
+| Backend | Surface | Needs | Speed |
+| --- | --- | --- | --- |
+| **`gemini`** | Drives a logged-in `gemini.google.com` browser via `chrome-use` — the browser analogue of `web`. | `chrome-use`, plus a Chrome profile signed in to a **subscribed** Google account. | ~11–24 s |
+| **`agy`** | The **Antigravity CLI** (`agy`) run headless — the analogue of `codex`. | `agy` on PATH. Passes `--dangerously-skip-permissions` by default because headless `agy` cannot prompt for tool permissions; `--no-agy-yolo` opts out if the user maintains their own `permissions.allow` rules. | ~14–25 s |
+
+**Their quotas are separate** — measured, not assumed: `agy` returned *"Image generation model quota (`gemini-3.1-flash-image`) has been exhausted (429)"* while a `--backend gemini` run on the **same Google account** succeeded seconds later. So each is a genuine fallback for the other, and a quota error from one names the other in its message.
+
+**Neither is ever chosen by `auto`.** Deliberate: they hit a different vendor and account, and their output differs in ways a caller would notice. Ask for them by name.
+
+Behaviour worth knowing before recommending one:
+
+- **Visible watermark.** `gemini` **text-to-image** results carry the Gemini "sparkle" glyph, fixed at 65 px in from the bottom-right corner (measured identical across 5 runs at 1024×559). Image-to-image results do not. `agy` results have no visible mark.
+- **Both are watermarked invisibly regardless.** `agy` output carries a Google-signed C2PA manifest whose own description reads *"Applied imperceptible SynthID watermark"*. The SynthID signal is in the pixels and survives any re-encode.
+- **`gemini` drops the C2PA manifest.** Its bytes are read back through a canvas (Gemini renders results from a `blob:` src that neither in-page `fetch()` nor `chrome-use download-url` can read), and re-encoding to PNG strips metadata. The run prints a note saying so. `agy` copies the file, so its manifest survives.
+- **`--size` controls the aspect ratio on `gemini`, not the pixel count.** The chat surface has no size widget, so the ratio is requested in words — and honoured: asking square returned 1024×1024, asking 3:2 returned 1024×687, asking 2:3 returned 687×1024. What you cannot pin is the absolute resolution. With nothing requested Gemini defaults to 16:9, so the backend always asks for *something* (square when `--size` is `auto`). Real dimensions land in the run meta.
+- **The dedicated image model is selected automatically.** Before generating, the backend switches the composer to Gemini's image tool, which reports "generated using Nano Banana 2" — otherwise the prompt is answered by whatever chat model is active (seen: Flash-Lite). Best-effort: if the menu moved, the run continues on the chat default rather than failing. `--no-gemini-image-tool` skips the attempt. It does **not** remove the watermark or change the default ratio — both were checked against it directly.
+- **Pin the profile.** Nearly every Chrome profile is signed in to *some* Google account, and the cookie says nothing about which one holds the subscription — a probe run landed on an account whose "Google AI Pro subscription has expired" page has no composer at all. Set `--gemini-profile` / `CHATGPT_IMAGEGEN_GEMINI_PROFILE`. `doctor` warns when nothing is pinned.
 
 ## Prerequisites
 
@@ -114,7 +137,10 @@ Useful flags:
 
 | Flag | When to use |
 | --- | --- |
-| `--backend auto` \| `web` \| `codex` | `auto` (default) prefers web and falls back to codex only when the browser is unavailable/not-logged-in; `web` forces the logged-in-browser path (spares Codex-usage); `codex` forces the headless path (bills Codex-usage). Also settable via `CHATGPT_IMAGEGEN_BACKEND`. |
+| `--backend auto` \| `web` \| `codex` \| `gemini` \| `agy` | `auto` (default) prefers web and falls back to codex only when the browser is unavailable/not-logged-in; `web` forces the logged-in-browser path (spares Codex-usage); `codex` forces the headless path (bills Codex-usage); `gemini` and `agy` use a Google account instead and are never picked by `auto` (see [Gemini backends](#gemini-backends-opt-in--auto-never-picks-them)). Also settable via `CHATGPT_IMAGEGEN_BACKEND`. |
+| `--gemini-profile NAME` | (`gemini` backend) Chrome profile to drive, overriding `--profile`. Worth setting — auto-detection cannot tell which Google account holds the subscription. Also `CHATGPT_IMAGEGEN_GEMINI_PROFILE`. |
+| `--no-gemini-image-tool` | (`gemini` backend) skip switching the composer to the dedicated image model (Nano Banana 2). Rarely wanted — the switch is already best-effort. |
+| `--no-agy-yolo` | (`agy` backend) don't pass `--dangerously-skip-permissions`. Only use it if the user has their own `permissions.allow` rules — otherwise every headless run fails. |
 | `--profile auto` \| `relay` \| `NAME` | (web) Which Chrome profile to drive. `auto` (default): use the open Chrome if it's logged in, else auto-switch to a profile that is (detected offline from the cookie DB, read-only). `relay`: only the open Chrome. `"Profile 3"`: that profile. Note: *logged in* ≠ *able to generate* — a free-tier account can still hit its daily image cap. |
 | `--session NAME` | (web) Reuse a named Chrome tab group across runs instead of `imagegen-<pid>`. |
 | `--project NAME` | (web) ChatGPT Project to file the run's conversation under — matched by exact name, **created automatically if absent**, reused if present. Default `imagegen` (or `CHATGPT_IMAGEGEN_PROJECT`). Pass `--project ""` for a plain top-level chat. If the project step fails, the run warns and continues in a plain chat — it never blocks generation. |

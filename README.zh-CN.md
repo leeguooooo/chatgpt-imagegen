@@ -38,6 +38,8 @@ sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
 
 还需要**一个后端**——`web`(默认,驱动你登录着的 Chrome,不花 Codex 用量)或 `codex`(无头兜底)。`chatgpt-imagegen doctor` 看哪个就绪。→ **[后端与排错](https://drawstyle.leeguoo.com/zh/docs/backends)**
 
+也有 **Gemini** 订阅?还有两个走 Google 账号的后端:`--backend gemini`(驱动登录着 `gemini.google.com` 的 Chrome)和 `--backend agy`(Antigravity CLI,无头)。两者**额度互相独立**,一个用完另一个还能顶上。它们都不会被自动选中,得点名使用。用 `--gemini-profile` 指定有订阅的那个 Chrome profile——因为几乎每个 profile 都登录着*某个* Google 账号,自动探测分不出来。另外注意:Gemini 的**文生图**结果右下角带可见水印(图生图没有);`--size` 在这条路上控制的是画面比例,不是精确像素数。
+
 ## 用法
 
 ```bash

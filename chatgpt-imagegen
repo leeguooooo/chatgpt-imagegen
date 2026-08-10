@@ -58,13 +58,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.21.3"
+__version__ = "0.22.0"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.22.0]: 新增 Gemini 双后端:--backend gemini(驱动登录着的 Gemini 浏览器)与 --backend agy(Antigravity CLI 无头);两者额度实测互相独立,可互为兜底;都不进 auto,需点名使用
 # WHATSNEW[0.21.3]: SKILL.md 描述精简到 1024 字符内,修好 pi 加载时的超限告警;SKILL 版本号跟 CLI 对齐
 # WHATSNEW[0.21.2]: 修复 Python 3.13+ 上画廊全线连不上(证书链严格校验),style search/pull 与 --style-online 恢复可用
 # WHATSNEW[0.21.1]: 修复 web 后端 img2img 失效——ChatGPT 换了 composer 文件输入框,参考图改投 #upload-files(旧选择器只命中表单外的 sr-only 假输入框)
@@ -162,6 +163,50 @@ WEB_IMG_SRC_RE = r"estuary/content|files/download|oaiusercontent"
 # wins — because plans label the image-capable tier differently (Plus/Pro:
 # "Instant"; others may only have "Auto").
 WEB_MODEL_DEFAULT = "Instant,Auto"
+
+# ---------- gemini backends (a second subscription, two surfaces) ----------
+# Two independent paths to the same Google account:
+#   backend=gemini → gemini.google.com driven by chrome-use (like backend=web)
+#   backend=agy    → the Antigravity CLI, headless (like backend=codex)
+# Their quotas are SEPARATE, and that is measured rather than assumed: agy
+# returned "Image generation model quota (gemini-3.1-flash-image) has been
+# exhausted (429)" while a --backend gemini run on the same Google account
+# succeeded seconds later. So each is a real fallback for the other. Both are
+# offered; neither is in `auto` (see _dispatch for why).
+GEMINI_URL = "https://gemini.google.com/app"
+# Results render from a `blob:` src. The same googleusercontent host also serves
+# the account avatar (`/a/…`) and the profile chip (`/ogw/…`) — matching the bare
+# host would treat an avatar as a generated image, so exclude both paths.
+GEMINI_IMG_SRC_RE = (
+    r"^(?!.*googleusercontent\.com/(a/|ogw/))(?:.*googleusercontent\.com|blob:)")
+# The composer is a Quill contenteditable. Ordered candidates: the app is
+# Angular and its class names are stable-ish but not contractual.
+GEMINI_COMPOSER_SELECTORS = (
+    "rich-textarea .ql-editor",
+    'div[contenteditable="true"][role="textbox"]',
+    'div[contenteditable="true"]',
+)
+# No file input exists until the upload menu is opened, so img2img must click
+# this first. The UI is localised, hence the per-language candidates.
+GEMINI_UPLOAD_MENU_SELECTORS = (
+    'button[aria-label="上传和工具"]',
+    'button[aria-label*="Upload" i]',
+    'button[aria-label*="ファイル"]',
+)
+# The revealed input's `accept` lists documents and source files but NO image
+# types. That is only a file-picker filter — chrome-use sets the files through
+# CDP, which ignores `accept` — so uploading an image here works regardless.
+GEMINI_UPLOAD_SELECTORS = ("input[type=file]",)
+# Menu item that switches the composer to Gemini's dedicated image model. With
+# it on, the composer footer reads "generated using Nano Banana 2"; without it,
+# the prompt is answered by whatever chat model is selected (seen: Flash-Lite).
+GEMINI_IMAGE_TOOL_LABELS = ("制作图片", "Create image", "Create images",
+                            "画像を作成")
+# Antigravity CLI. Headless runs need permission pre-approval; without it the
+# run dies with "a tool required the command permission that headless mode
+# cannot prompt for".
+AGY_BIN_CANDIDATES = ("agy",)
+AGY_TIMEOUT_DEFAULT = 420
 
 JsonDict = dict[str, Any]
 
@@ -972,13 +1017,19 @@ def _chrome_user_data_dirs() -> list[Path]:
     ]
 
 
-def _detect_logged_in_profiles() -> list[str]:
-    """Chrome profile names with a live chatgpt.com session, freshest first.
+def _detect_logged_in_profiles(
+    host_like: str = "%chatgpt.com%",
+    name_clause: str = "name LIKE '__Secure-next-auth.session-token%'",
+) -> list[str]:
+    """Chrome profile names with a live session for a site, freshest first.
 
     Read-only and offline: each profile's `Cookies` SQLite is copied and queried
-    only for the `__Secure-next-auth.session-token` cookie's host/expiry — the
-    encrypted value is never read or decrypted. Detects *whether* a profile is
-    logged in, not which account; that's all the web backend needs to pick one.
+    only for the session cookie's host/expiry — the encrypted value is never read
+    or decrypted. Detects *whether* a profile is logged in, not which account.
+
+    Defaults describe chatgpt.com. `_detect_google_profiles` passes the Google
+    equivalent; the two differ only in these two SQL fragments, so the scan,
+    the safe-copy, and the freshest-first ordering stay in one place.
     """
     import sqlite3
 
@@ -1003,8 +1054,7 @@ def _detect_logged_in_profiles() -> list[str]:
                 con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
                 row = con.execute(
                     "SELECT MAX(expires_utc) FROM cookies "
-                    "WHERE host_key LIKE '%chatgpt.com%' "
-                    "AND name LIKE '__Secure-next-auth.session-token%'"
+                    f"WHERE host_key LIKE '{host_like}' AND {name_clause}"
                 ).fetchone()
                 con.close()
                 exp = row[0] if row else None
@@ -1020,6 +1070,22 @@ def _detect_logged_in_profiles() -> list[str]:
                         pass
     found.sort(key=lambda r: r[1], reverse=True)
     return [name for name, _exp in found]
+
+
+def _detect_google_profiles() -> list[str]:
+    """Chrome profiles signed in to a Google account, freshest cookie first.
+
+    CAVEAT worth knowing before you trust this: a Google sign-in is far less
+    discriminating than a chatgpt.com one. On a normal machine most profiles are
+    signed in to *some* Google account, and the cookie says nothing about which
+    account or whether it carries a Gemini subscription — a probe run hit a
+    profile whose "Google AI Pro subscription has expired" page has no composer
+    at all. So this is a candidate list, not an answer: pin the right profile
+    with --profile / CHATGPT_IMAGEGEN_GEMINI_PROFILE.
+    """
+    return _detect_logged_in_profiles(
+        "%google.com",
+        "name IN ('__Secure-1PSID', '__Secure-3PSID', 'SID')")
 
 
 def _relay_connected(ab: str) -> bool:
@@ -1923,6 +1989,605 @@ def _generate_in_browser(ab, session, user_text, args, deadline, remaining, emit
     return image_bytes, meta
 
 
+# ---------- gemini backend (drive the logged-in Gemini browser) ----------
+
+_JS_GEMINI_COMPOSER = r"""(() => {
+  const sels = %s;
+  let found = null;
+  for (const s of sels) {
+    try { if (document.querySelector(s)) { found = s; break; } } catch (e) {}
+  }
+  const t = document.body ? (document.body.innerText || '') : '';
+  return JSON.stringify({
+    composer: found,
+    // No composer AND a sign-in prompt = a login wall, not a slow app boot.
+    signin: !found && /sign in|登录|ログイン/i.test(t),
+    // Seen live: an expired Google AI subscription renders this and no composer.
+    expired: /订阅已到期|subscription (has )?expired/i.test(t),
+    limited: /reached your limit|try again later|请稍后再试/i.test(t),
+  });
+})()"""
+
+_JS_GEMINI_BASELINE = r"""(() => {
+  const re = new RegExp(%s);
+  return JSON.stringify([...document.querySelectorAll('img')]
+    .map(i => i.currentSrc || i.src).filter(s => s && re.test(s)));
+})()"""
+
+_JS_GEMINI_STATE = r"""(() => {
+  const seen = new Set(%s);
+  const re = new RegExp(%s);
+  const stop = !!document.querySelector(
+    'button[aria-label*="Stop" i], button[aria-label*="停止"]');
+  // Exclude images echoed inside the user's own turn: an img2img reference is
+  // itself a fresh blob: img and would otherwise be mistaken for the result.
+  const userSrcs = new Set();
+  document.querySelectorAll('user-query img, [class*="user-query"] img')
+    .forEach(i => { const s = i.currentSrc || i.src; if (s) userSrcs.add(s); });
+  const fresh = [...document.querySelectorAll('img')]
+    .map(i => i.currentSrc || i.src)
+    .filter(s => s && re.test(s) && !seen.has(s) && !userSrcs.has(s));
+  const resp = document.querySelectorAll('model-response');
+  const last = resp[resp.length - 1];
+  const t = document.body ? (document.body.innerText || '') : '';
+  return JSON.stringify({
+    stop, last: fresh[fresh.length - 1] || null,
+    answered: resp.length > 0,
+    limited: /reached your limit|try again later|请稍后再试/i.test(t),
+    atext: last ? (last.innerText || '').trim().slice(0, 240) : '',
+  });
+})()"""
+
+# Read the bytes out of the rendered <img> through a canvas.
+#
+# This is deliberately NOT the _JS_FETCH approach the ChatGPT path uses, because
+# neither of the obvious routes works here: Gemini renders results from a
+# `blob:` src, which in-page fetch() rejects from chrome-use's eval context
+# ("TypeError: Failed to fetch") and which `chrome-use download-url` refuses
+# outright ("expected http:// or https://"). The <img> is same-origin, so the
+# canvas is untainted and toDataURL is permitted.
+#
+# COST, and it is a real one: this re-encodes to PNG, which strips the image's
+# metadata — including the C2PA provenance manifest Google signs its generated
+# images with. The imperceptible SynthID watermark lives in the pixels and
+# survives; the signed manifest does not. `--verbose` says so on every run.
+_JS_GEMINI_CANVAS = r"""(() => {
+  try {
+    const want = %s;
+    const img = [...document.querySelectorAll('img')]
+      .find(i => (i.currentSrc || i.src) === want);
+    if (!img) return JSON.stringify({ok: false, error: 'img element is gone'});
+    if (!img.complete || !img.naturalWidth)
+      return JSON.stringify({ok: false, error: 'img not decoded yet'});
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return JSON.stringify({ok: true, type: 'image/png', w: c.width, h: c.height,
+                           b64: c.toDataURL('image/png').split(',')[1]});
+  } catch (e) { return JSON.stringify({ok: false, error: String(e)}); }
+})()"""
+
+_JS_GEMINI_UPLOADED = r"""(() => {
+  const t = document.body ? (document.body.innerText || '') : '';
+  return JSON.stringify(/图片已上传|image uploaded|已上传/i.test(t)
+    || [...document.querySelectorAll('img')]
+         .some(i => (i.currentSrc || i.src || '').startsWith('blob:')));
+})()"""
+
+
+def _find_agy() -> str | None:
+    for name in AGY_BIN_CANDIDATES:
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
+def _build_reference_framing(n_character_refs: int, n_style_refs: int) -> str:
+    """One sentence describing what the attached references ARE.
+
+    Shared by the gemini and agy backends, and deliberately mirrors
+    `_build_web_text`'s distinction: character refs are the subject and must be
+    reproduced, style refs only set the aesthetic and must NOT have their
+    content copied. Collapsing the two is not a cosmetic error — a first agy run
+    that called every reference "the subject" answered a prompt about a glass
+    bottle with a four-panel comic strip of the style reference's cartoon dog.
+    """
+    if n_character_refs and n_style_refs:
+        return (f"The first {n_character_refs} reference image(s) show a "
+                f"recurring character — reproduce them faithfully as the "
+                f"subject. The remaining {n_style_refs} are style references: "
+                f"match their aesthetic, do NOT copy their content.")
+    if n_character_refs:
+        return ("Keep the reference image(s) as the canonical subject — "
+                "reproduce their shapes, colours, and texture faithfully.")
+    if n_style_refs:
+        return ("Match the visual style of the reference image(s); "
+                "do NOT copy their content or subject matter.")
+    return ""
+
+
+def _build_gemini_text(prompt: str, size: str,
+                       n_character_refs: int = 0, n_style_refs: int = 0) -> str:
+    """Prompt text for the Gemini composer.
+
+    Gemini's chat surface has no size control, so the aspect ratio has to be
+    asked for in words — and it *is* honoured. Measured: asking for square
+    returned 1024x1024, asking for portrait 2:3 returned 687x1024 (2:3 to within
+    a pixel). What is NOT controllable is the absolute pixel count.
+
+    Which is why the ratio sentence is emitted even when the caller left --size
+    at "auto": with nothing requested Gemini defaults to 16:9 (five probe runs,
+    all 1024x559), so staying silent is itself a choice — and a surprising one
+    for a caller who asked for no particular shape. The real dimensions are
+    recorded in the run meta either way.
+    """
+    ratio = {"1024x1024": "square 1:1", "1024x1536": "portrait 2:3",
+             "1536x1024": "landscape 3:2"}.get(size)
+    if ratio is None and (not size or size == "auto"):
+        ratio = "square 1:1"
+    bits = ["Generate an image." if not (n_character_refs or n_style_refs)
+            else "Using the attached reference image(s), generate a new image."]
+    framing = _build_reference_framing(n_character_refs, n_style_refs)
+    if framing:
+        bits.append(framing)
+    bits.append(f"Scene: {prompt}.")
+    if ratio:
+        bits.append(f"Compose it as a {ratio} image.")
+    return " ".join(bits)
+
+
+def _gemini_wait_composer(ab: str, session: str, remaining, tries: int = 20) -> str:
+    """Poll until Gemini's composer exists; return the selector that matched."""
+    js = _JS_GEMINI_COMPOSER % json.dumps(list(GEMINI_COMPOSER_SELECTORS))
+    for _ in range(tries):
+        try:
+            st = _ab_eval(ab, js, session=session, timeout=min(20.0, remaining()))
+        except GatewayError:
+            st = None
+        if isinstance(st, dict):
+            if st.get("expired"):
+                raise WebUnavailable(
+                    "this Google account's Gemini subscription has expired — "
+                    "pin a subscribed profile with --profile / "
+                    "CHATGPT_IMAGEGEN_GEMINI_PROFILE")
+            if st.get("limited"):
+                raise WebRateLimited(
+                    "gemini.google.com rate-limited this account — it needs a "
+                    "few minutes of quiet before it will serve again.")
+            if st.get("signin"):
+                raise WebUnavailable(
+                    "that Chrome isn't signed in to gemini.google.com")
+            if st.get("composer"):
+                return st["composer"]
+        time.sleep(1.5)
+    raise WebUnavailable("Gemini's composer never appeared (login wall, or the "
+                         "page was blocked)")
+
+
+def _gemini_enable_image_tool(ab, session, remaining, emit) -> bool:
+    """Switch the composer to Gemini's dedicated image tool before generating.
+
+    Without it a prompt is answered by the chat model currently selected (the
+    picker showed "Flash-Lite" on a live run); with it, the composer reports
+    "generated using Nano Banana 2" — Google's image model. Same idea as the
+    ChatGPT backend forcing Instant over Pro.
+
+    Best-effort by design: it returns False and the caller proceeds anyway,
+    because the plain chat path demonstrably produces images too (8 verified
+    runs). A menu reshuffle should cost image *quality*, never the whole run.
+
+    Note what this does NOT fix — both were checked directly against it: results
+    still carry the visible bottom-right watermark, and the default aspect ratio
+    is still 16:9. The ratio is steered by the prompt (see _build_gemini_text).
+    """
+    opened = False
+    for sel in GEMINI_UPLOAD_MENU_SELECTORS:
+        try:
+            _ab(ab, "click", sel, session=session, timeout=min(20.0, remaining()))
+            opened = True
+            break
+        except GatewayError:
+            continue
+    if not opened:
+        emit("note: could not open Gemini's tool menu; using the chat default")
+        return False
+    time.sleep(1.5)
+    # Match on the item's own text: the labels are localised and the Angular
+    # class names are not contractual, so text is the most durable handle.
+    js = r"""(() => {
+      const want = %s;
+      const b = [...document.querySelectorAll('button, [role=menuitem]')]
+        .find(e => want.includes((e.innerText || '').trim()));
+      if (!b) return JSON.stringify(false);
+      b.click();
+      return JSON.stringify(true);
+    })()""" % json.dumps(list(GEMINI_IMAGE_TOOL_LABELS))
+    try:
+        if _ab_eval(ab, js, session=session, timeout=min(20.0, remaining())):
+            time.sleep(1.5)
+            emit("image tool enabled")
+            return True
+    except GatewayError:
+        pass
+    emit("note: image tool not found in the menu; using the chat default")
+    return False
+
+
+def _gemini_upload_references(ab, session, ref_paths, remaining, emit) -> None:
+    """Attach reference images to Gemini's composer.
+
+    Unlike ChatGPT, Gemini mounts NO file input until the upload menu is opened,
+    so the menu click is a required step rather than a nicety — without it the
+    upload fails with "element not found".
+    """
+    emit(f"attaching {len(ref_paths)} reference image(s)")
+    opened = False
+    for sel in GEMINI_UPLOAD_MENU_SELECTORS:
+        try:
+            _ab(ab, "click", sel, session=session, timeout=min(20.0, remaining()))
+            opened = True
+            break
+        except GatewayError:
+            continue
+    if not opened:
+        raise GatewayError("could not open Gemini's upload menu — img2img needs "
+                           "it to mount the file input")
+    time.sleep(1.5)
+
+    err: GatewayError | None = None
+    for sel in GEMINI_UPLOAD_SELECTORS:
+        try:
+            _ab(ab, "upload", sel, *ref_paths,
+                session=session, timeout=min(90.0, remaining()))
+            err = None
+            break
+        except GatewayError as e:
+            err = e
+    if err is not None:
+        raise err
+
+    for _ in range(15):
+        try:
+            if _ab_eval(ab, _JS_GEMINI_UPLOADED, session=session,
+                        timeout=min(10.0, remaining())):
+                emit("reference attached")
+                time.sleep(2.0)  # let it finalise server-side before we send
+                return
+        except GatewayError:
+            pass
+        time.sleep(1.0)
+    emit("warning: reference attachment not confirmed; submitting anyway")
+
+
+def _gemini_submit(ab, session, composer, text, remaining, emit) -> None:
+    """Type into the composer and send.
+
+    `keyboard type` rather than `fill`: the composer is a Quill contenteditable
+    and a DOM-only mutation leaves the send button bound to empty state. Enter
+    submits reliably (verified over 8 runs); the localised send button is only a
+    fallback, since aria-label="Send" does not exist on a non-English UI.
+    """
+    _ab(ab, "click", composer, session=session, timeout=min(20.0, remaining()))
+    _ab(ab, "keyboard", "type", text, session=session, timeout=min(60.0, remaining()))
+    empty_js = ("(() => { const e = document.querySelector(%s);"
+                " return JSON.stringify(!e || (e.innerText||'').trim().length===0); })()"
+                % json.dumps(composer))
+
+    def _cleared() -> bool:
+        try:
+            return bool(_ab_eval(ab, empty_js, session=session,
+                                 timeout=min(15.0, remaining())))
+        except GatewayError:
+            return False
+
+    for _ in range(6):
+        _ab(ab, "press", "Enter", session=session, timeout=min(20.0, remaining()))
+        time.sleep(1.2)
+        if _cleared():
+            emit("submitted")
+            return
+        for sel in ('button[aria-label*="Send" i]', 'button[aria-label*="发送"]',
+                    "button.send-button"):
+            try:
+                _ab(ab, "click", sel, session=session, timeout=min(15.0, remaining()))
+                break
+            except GatewayError:
+                continue
+        time.sleep(1.5)
+        if _cleared():
+            emit("submitted")
+            return
+    emit("warning: composer did not clear — the prompt may not have sent")
+
+
+def _gemini_poll(ab, session, baseline, deadline, remaining, emit) -> str:
+    """Poll until a brand-new image src is present and stable across two reads."""
+    js = _JS_GEMINI_STATE % (json.dumps(baseline), json.dumps(GEMINI_IMG_SRC_RE))
+    stable = None
+    idle = 0
+    phase = ""
+    atext = ""
+    while time.monotonic() < deadline:
+        time.sleep(2.0)
+        try:
+            st = _ab_eval(ab, js, session=session, timeout=min(20.0, remaining()))
+        except GatewayError:
+            continue
+        if not isinstance(st, dict):
+            continue
+        if st.get("limited"):
+            # Post-submit: a plain GatewayError on purpose, so nothing silently
+            # retries elsewhere after the prompt has already been spent.
+            raise GatewayError("gemini.google.com rate-limited this account "
+                               "mid-generation; the prompt was already submitted")
+        if st.get("stop"):
+            if phase != "generating":
+                phase = "generating"
+                emit("generating")
+            stable, idle = None, 0
+            continue
+        cur = st.get("last")
+        if cur:
+            if phase != "receiving":
+                phase = "receiving"
+                emit("receiving image")
+            idle = 0
+            if cur == stable:
+                return cur
+            stable = cur
+        elif st.get("answered"):
+            if st.get("atext"):
+                atext = st["atext"]
+            idle += 1
+            if idle >= 10:   # ~20s answered-but-no-image → text reply or refusal
+                said = f' Gemini said: "{atext}"' if atext else ""
+                raise GatewayError(
+                    "Gemini finished without producing an image (text reply, "
+                    "refusal, or image quota reached)." + said)
+    raise GatewayError(f"timed out waiting for the image "
+                       f"(last phase: {phase or 'connecting'})")
+
+
+def _gemini_fetch(ab, session, src, remaining, emit) -> tuple[bytes, JsonDict]:
+    emit("downloading image bytes")
+    last = None
+    for _ in range(5):
+        try:
+            res = _ab_eval(ab, _JS_GEMINI_CANVAS % json.dumps(src),
+                           session=session, timeout=min(60.0, remaining()))
+        except GatewayError as e:
+            res = {"ok": False, "error": str(e)}
+        if isinstance(res, dict) and res.get("ok"):
+            try:
+                data = base64.b64decode(res["b64"], validate=True)
+            except Exception:
+                raise GatewayError(
+                    "generated image came back as invalid base64") from None
+            return data, {"content_type": "image/png", "source": "gemini",
+                          "width": res.get("w"), "height": res.get("h")}
+        last = res
+        time.sleep(2.0)  # nearly always just "img not decoded yet"
+    raise GatewayError(f"failed to read the generated image off the page: {last}")
+
+
+def run_gemini(
+    args: argparse.Namespace, progress: bool, start: float,
+    refs: list[str] | None = None,
+) -> tuple[bytes, JsonDict]:
+    """Generate an image by driving the user's logged-in Gemini browser.
+
+    Same shape as `run_web` — open, wait for the composer, submit, poll, read the
+    bytes, close — but every step differs enough from ChatGPT's DOM that sharing
+    the code would be worse than repeating its structure.
+
+    Two behaviours to know before choosing this backend:
+      • Text-to-image results carry a VISIBLE Gemini "sparkle" watermark, fixed
+        at 65px in from the bottom-right corner. Image-to-image results do not.
+      • Size is a hint, not a setting — see `_build_gemini_text`.
+    """
+    ab = _find_agent_browser()
+    if ab is None:
+        raise WebUnavailable(f"`chrome-use` is not installed — {_AB_INSTALL_HINT}")
+    session = args.session or "imagegen-gemini"
+    deadline = time.monotonic() + args.timeout
+
+    def emit(msg: str) -> None:
+        if progress:
+            print(_fmt_progress(time.monotonic() - start, msg), file=sys.stderr)
+
+    def remaining() -> float:
+        return max(2.0, deadline - time.monotonic())
+
+    _warn_if_chrome_use_old(ab, emit)
+
+    pl = (getattr(args, "gemini_profile", None) or args.profile or "auto").strip()
+    if pl.lower() in ("relay", "off", "current"):
+        candidates: list[str | None] = [None]
+    elif pl.lower() == "auto":
+        # Ordering only; a Google cookie is a weak signal (see
+        # _detect_google_profiles), so auto is a convenience, not a guarantee.
+        candidates = _auto_candidates(_detect_google_profiles(),
+                                      _relay_connected(ab))
+    else:
+        candidates = [pl]
+
+    def _close() -> None:
+        try:
+            _ab(ab, "close", session=session, timeout=15.0)
+        except Exception:
+            pass
+
+    chosen_composer = None
+    reasons: list[str] = []
+    for prof in candidates:
+        label = "current Chrome (relay)" if prof is None else f"profile {prof!r}"
+        emit(f"opening Gemini via {label}")
+        try:
+            _ab(ab, "open", GEMINI_URL, session=session,
+                timeout=min(45.0, remaining()), profile=prof)
+            chosen_composer = _gemini_wait_composer(ab, session, remaining)
+            emit(f"using {label}")
+            break
+        except WebRateLimited:
+            _close()
+            raise
+        except GatewayError as e:
+            emit(f"{label} unavailable: {e}")
+            reasons.append(f"{label} — {e}")
+            _close()
+    if chosen_composer is None:
+        raise WebUnavailable(
+            "no Chrome profile could reach a usable Gemini:\n  • "
+            + "\n  • ".join(reasons or ["no candidate profiles"])
+            + "\nPin the subscribed one with --profile / "
+              "CHATGPT_IMAGEGEN_GEMINI_PROFILE.")
+
+    try:
+        if getattr(args, "gemini_image_tool", True):
+            _gemini_enable_image_tool(ab, session, remaining, emit)
+        cleanups: list[str] = []
+        if refs:
+            paths = []
+            for r in refs:
+                p, tmp = _resolve_ref_path(r)
+                paths.append(p)
+                if tmp:
+                    cleanups.append(tmp)
+            try:
+                _gemini_upload_references(ab, session, paths, remaining, emit)
+            finally:
+                for c in cleanups:
+                    try:
+                        os.remove(c)
+                    except Exception:
+                        pass
+        # Baseline AFTER any upload: the reference thumbnail is itself a fresh
+        # blob: <img>, so a baseline taken before it would let the poll return
+        # the user's own reference as the "generated" image.
+        baseline = _ab_eval(ab, _JS_GEMINI_BASELINE % json.dumps(GEMINI_IMG_SRC_RE),
+                            session=session, timeout=min(20.0, remaining()))
+        if not isinstance(baseline, list):
+            baseline = []
+
+        n_char, n_style = _ref_counts(args, refs)
+        text = _build_gemini_text(args.gen_prompt, args.size,
+                                  n_character_refs=n_char, n_style_refs=n_style)
+        _gemini_submit(ab, session, chosen_composer, text, remaining, emit)
+        src = _gemini_poll(ab, session, baseline, deadline, remaining, emit)
+        data, meta = _gemini_fetch(ab, session, src, remaining, emit)
+        emit("note: the PNG is re-encoded off a canvas, which drops Google's "
+             "C2PA provenance manifest (the imperceptible SynthID watermark "
+             "in the pixels is unaffected)")
+        if not refs:
+            emit("note: text-to-image results carry a visible Gemini watermark "
+                 "at the bottom-right")
+        return data, meta
+    finally:
+        if not args.keep_tab:
+            _close()
+
+
+# ---------- agy backend (Antigravity CLI, headless) ----------
+
+# The CLI is an agent, not an image endpoint: it decides on its own where to put
+# the file, and a sandboxed run redirects cwd (observed: it wrote to
+# ~/.gemini/antigravity-cli/scratch/ despite being told "the current directory").
+# So instead of guessing the path, we make it TELL us — the last line of stdout.
+# Verified stable across three runs.
+_AGY_PROMPT = (
+    "{intent}\n\n"
+    "Requirements:\n"
+    "- Use a real image-generation model. Do NOT draw the image with code "
+    "(no PIL/matplotlib/SVG/canvas).\n"
+    "- Save the result to this exact path: {out}\n"
+    "- Print that absolute path, alone, as the very last line of your reply.\n"
+    "- Do not ask questions; if something is ambiguous, choose and proceed."
+)
+
+
+def _agy_extract_path(stdout: str) -> str | None:
+    """Pull the saved-file path out of agy's reply (last path-looking line)."""
+    for line in reversed([l.strip() for l in stdout.splitlines() if l.strip()]):
+        # Strip a markdown link wrapper — agy sometimes answers with
+        # `[teapot.png](file:///abs/path)` rather than a bare path. Excluding
+        # `)` from the path is what keeps the link's closing paren out of it.
+        m = re.search(r"file://(/[^\s)>\]\"']+)", line)
+        if m:
+            return m.group(1)
+        cand = line.strip("`'\" ")
+        if cand.startswith("/") and Path(cand).is_file():
+            return cand
+    return None
+
+
+def run_agy(
+    args: argparse.Namespace, progress: bool, start: float,
+    refs: list[str] | None = None,
+) -> tuple[bytes, JsonDict]:
+    """Generate an image through the Antigravity CLI (`agy`), headless.
+
+    Compared with the browser path this is slower (~20-25s vs ~11s) but produces
+    squarer, unwatermarked-looking output — "looking" because the image is in
+    fact marked, just not visibly: its metadata carries a Google-signed C2PA
+    manifest whose own description reads "Applied imperceptible SynthID
+    watermark". Unlike the gemini browser backend, that manifest survives here,
+    because the bytes are copied rather than re-encoded.
+    """
+    agy = _find_agy()
+    if agy is None:
+        raise WebUnavailable(
+            "`agy` (Antigravity CLI) is not installed or not on PATH")
+
+    def emit(msg: str) -> None:
+        if progress:
+            print(_fmt_progress(time.monotonic() - start, msg), file=sys.stderr)
+
+    tmpdir = tempfile.mkdtemp(prefix="imagegen-agy-")
+    out_hint = str(Path(tmpdir) / "out.png")
+    intent = f"Generate an image. Scene: {args.gen_prompt}."
+    if refs:
+        resolved = [_resolve_ref_path(r)[0] for r in refs]
+        n_char, n_style = _ref_counts(args, refs)
+        intent += ("\nReference images, in order: " + ", ".join(resolved)
+                   + "\n" + _build_reference_framing(n_char, n_style))
+    if args.size and args.size != "auto":
+        intent += f"\nTarget size: {args.size} pixels."
+
+    prompt = _AGY_PROMPT.format(intent=intent, out=out_hint)
+    cmd = [agy, "-p", prompt, "--output-format", "text"]
+    if getattr(args, "agy_yolo", True):
+        # Headless agy cannot prompt for tool permissions, and image generation
+        # needs at least one tool — without pre-approval every run dies with
+        # "no output produced". The alternative is a permissions.allow entry in
+        # the user's agy settings.json; --no-agy-yolo leaves that to them.
+        cmd.append("--dangerously-skip-permissions")
+
+    emit("running agy (this bills the Antigravity account, not Codex)")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=tmpdir, timeout=max(60.0, args.timeout))
+    except subprocess.TimeoutExpired:
+        raise GatewayError(f"agy timed out after {args.timeout}s") from None
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        raise GatewayError(f"agy failed (exit {proc.returncode}): "
+                           f"{' / '.join(tail)[:300]}")
+
+    path = out_hint if Path(out_hint).is_file() else _agy_extract_path(proc.stdout)
+    if not path or not Path(path).is_file():
+        tail = " / ".join(proc.stdout.strip().splitlines()[-3:])[:300]
+        raise GatewayError(
+            "agy ran but no image file was produced. It said: " + tail)
+
+    data = Path(path).read_bytes()
+    # Never trust the extension agy chose: a run that saved "teapot.png" in fact
+    # wrote a JPEG. Sniff the real type so the file lands with a truthful name.
+    ctype = _sniff_mime(data[:16]) or "application/octet-stream"
+    emit(f"agy produced {len(data)} bytes ({ctype})")
+    return data, {"content_type": ctype, "source": "agy", "agy_path": path}
+
+
 # ---------- save ----------
 
 def _default_out_path(prompt: str, fmt: str) -> Path:
@@ -2357,6 +3022,36 @@ def _dispatch(
 
     if args.backend == "codex":
         return run_codex(args, progress, stall_timeout, start, refs=refs)
+
+    # The two Gemini surfaces are explicit-only: they are never reached from
+    # `auto`. That is a deliberate choice, not an omission — they hit a
+    # different vendor and a different account, and their output differs in ways
+    # a caller would notice (a visible watermark on text-to-image, an aspect
+    # ratio that can only be requested rather than set). Silently rerouting an
+    # existing `auto` user there would change their images without their asking.
+    if args.backend == "agy":
+        try:
+            return run_agy(args, progress, start, refs=refs)
+        except GatewayError as e:
+            msg = str(e)
+            # The two Gemini surfaces draw on SEPARATE quotas — proven, not
+            # assumed: a run that got "Image generation model quota
+            # (gemini-3.1-flash-image) has been exhausted (429)" from agy was
+            # followed seconds later by a successful --backend gemini run on the
+            # same Google account. Worth telling the user, since the obvious
+            # reading of a quota error is "this account is done for now".
+            if "quota" in msg.lower() or "429" in msg:
+                msg += ("\nagy and the gemini browser backend bill separate "
+                        "quotas — `--backend gemini` may still work right now.")
+            sys.exit(msg)
+
+    if args.backend == "gemini":
+        limit = _backend_limit("gemini", WEB_CONCURRENCY_DEFAULT)
+        try:
+            with _concurrency_slot("gemini", limit, progress, start):
+                return run_gemini(args, progress, start, refs=refs)
+        except GatewayError as e:
+            sys.exit(str(e))
 
     web_limit = _backend_limit("web", WEB_CONCURRENCY_DEFAULT)
 
@@ -3832,6 +4527,25 @@ def _doctor_command(argv: list[str]) -> int:
         else:
             line("fail", "profiles", "none detected — sign in to chatgpt.com")
 
+    print("\n  gemini backends (opt-in — never chosen by auto):")
+    g_profiles = _detect_google_profiles() if ab is not None else []
+    pinned = os.environ.get("CHATGPT_IMAGEGEN_GEMINI_PROFILE")
+    if ab is None:
+        line("fail", "gemini", "needs chrome-use (see above)")
+    elif pinned:
+        line("ok", "gemini", f"profile pinned: {pinned!r}")
+    elif g_profiles:
+        # Deliberately a warning, not an ok: a Google cookie proves a sign-in,
+        # not a subscription, and a probe run landed on an expired account.
+        line("warn", "gemini",
+             f"{len(g_profiles)} Google profile(s), but none pinned — set "
+             "CHATGPT_IMAGEGEN_GEMINI_PROFILE")
+    else:
+        line("fail", "gemini", "no Google-signed-in Chrome profile detected")
+    agy = _find_agy()
+    line("ok" if agy else "fail", "agy",
+         agy or "not installed — the Antigravity CLI provides `agy`")
+
     web_ready = _web_ready(ab is not None, relay, len(profiles))
     pick = _auto_backend_pick(web_ready, codex_ready)
     arrow = _dim("→", stream=sys.stdout) if color else "→"
@@ -4019,13 +4733,47 @@ def main() -> int:
     )
     parser.add_argument(
         "--backend",
-        choices=["auto", "web", "codex"],
+        choices=["auto", "web", "codex", "gemini", "agy"],
         default=os.environ.get("CHATGPT_IMAGEGEN_BACKEND", "auto"),
         help="auto (default): prefer web (spares Codex-usage limits); fall back "
              "to codex only if the browser isn't available/logged in. "
              "web: force the logged-in-browser path (chrome-use). "
              "codex: force the headless codex/responses path (bills Codex-usage). "
+             "gemini: drive a logged-in gemini.google.com browser (a Google "
+             "account, not OpenAI — text-to-image results carry a visible "
+             "watermark and --size is only a hint). "
+             "agy: the Antigravity CLI, headless (slower, square output, keeps "
+             "Google's C2PA provenance metadata). Neither gemini nor agy is ever "
+             "chosen by auto — ask for them by name. "
              "Also settable via CHATGPT_IMAGEGEN_BACKEND.",
+    )
+    parser.add_argument(
+        "--gemini-profile",
+        default=os.environ.get("CHATGPT_IMAGEGEN_GEMINI_PROFILE"),
+        help="(gemini backend) Chrome profile to drive, overriding --profile. "
+             "Worth setting: nearly every Chrome profile is signed in to SOME "
+             "Google account, so auto-detection cannot tell which one holds the "
+             "Gemini subscription. Also settable via "
+             "CHATGPT_IMAGEGEN_GEMINI_PROFILE.",
+    )
+    parser.add_argument(
+        "--no-gemini-image-tool",
+        dest="gemini_image_tool",
+        action="store_false",
+        default=True,
+        help="(gemini backend) don't switch the composer to Gemini's dedicated "
+             "image tool (Nano Banana 2) — leave whatever chat model is "
+             "selected. Enabling the tool is best-effort already; this only "
+             "skips the attempt.",
+    )
+    parser.add_argument(
+        "--no-agy-yolo",
+        dest="agy_yolo",
+        action="store_false",
+        default=True,
+        help="(agy backend) don't pass --dangerously-skip-permissions. Headless "
+             "agy cannot prompt for tool permissions, so without it every run "
+             "fails unless you have added your own permissions.allow rules.",
     )
     parser.add_argument(
         "--session",
