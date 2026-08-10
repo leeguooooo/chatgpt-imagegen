@@ -58,13 +58,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.21.2"
+__version__ = "0.21.3"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.21.3]: SKILL.md 描述精简到 1024 字符内,修好 pi 加载时的超限告警;SKILL 版本号跟 CLI 对齐
 # WHATSNEW[0.21.2]: 修复 Python 3.13+ 上画廊全线连不上(证书链严格校验),style search/pull 与 --style-online 恢复可用
 # WHATSNEW[0.21.1]: 修复 web 后端 img2img 失效——ChatGPT 换了 composer 文件输入框,参考图改投 #upload-files(旧选择器只命中表单外的 sr-only 假输入框)
 # WHATSNEW[0.21.0]: 新增 animate 子命令:一次生成4x2雪碧图,校验主体漂移并输出循环WebP/GIF

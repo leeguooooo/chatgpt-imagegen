@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.21.0"
+version: "0.21.3"
 description: >-
   Generate new raster images and looping GIF/WebP animations with the user's
   ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
