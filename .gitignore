@@ -18,8 +18,13 @@ assets/generated/
 !docs/**/*.jpg
 !docs/**/*.webp
 
-# Personal drafts / promo material — not part of the published skill
-drafts/
+# Personal drafts / promo material — not part of the published skill.
+# `drafts/*` rather than `drafts/`: git cannot re-include a file whose parent
+# DIRECTORY is excluded, so ignoring the contents is what makes the exception
+# below work at all.
+drafts/*
+# …except the Gemini probe, which is a standalone diagnostic worth keeping.
+!drafts/gemini_probe.py
 
 # Local CodeGraph index — machine-specific, rebuilt on demand
 .codegraph/
