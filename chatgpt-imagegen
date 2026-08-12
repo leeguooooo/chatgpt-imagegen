@@ -2385,8 +2385,46 @@ def _gemini_poll(ab, session, baseline, deadline, remaining, emit) -> str:
                        f"(last phase: {phase or 'connecting'})")
 
 
+def _gemini_blob_download(ab, session, src, remaining) -> tuple[bytes, JsonDict] | None:
+    """Pull a blob: src byte-exact via `chrome-use download-url`, or None.
+
+    This is the route that preserves Google's signed C2PA provenance manifest
+    (issue #27). chrome-use used to reject blob: URLs outright
+    (leeguooooo/chrome-use#169), which left only the canvas re-encode below —
+    and a canvas holds pixels, not files, so every metadata block died with it.
+    Upstream now resolves the blob inside the page and streams the original
+    bytes out, so the manifest survives.
+
+    Returns None (never raises) on any failure — an old chrome-use, a dead
+    blob, a >32MB payload. The caller falls back to the canvas, which always
+    worked; losing provenance beats losing the image.
+    """
+    if not src.startswith("blob:"):
+        return None
+    tmpdir = tempfile.mkdtemp(prefix="imagegen-gemini-")
+    dest = Path(tmpdir) / "out.bin"
+    try:
+        _ab(ab, "download-url", src, str(dest),
+            session=session, timeout=min(60.0, remaining()))
+        data = dest.read_bytes()
+    except (GatewayError, OSError):
+        return None
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    ctype = _sniff_mime(data[:16])
+    if not data or not ctype:
+        return None  # not an image — treat as a miss, let the canvas try
+    return data, {"content_type": ctype, "source": "gemini",
+                  "transport": "blob-download", "provenance": "preserved"}
+
+
 def _gemini_fetch(ab, session, src, remaining, emit) -> tuple[bytes, JsonDict]:
     emit("downloading image bytes")
+    got = _gemini_blob_download(ab, session, src, remaining)
+    if got is not None:
+        emit(f"read {len(got[0])} bytes byte-exact off the blob "
+             f"(C2PA provenance intact)")
+        return got
     last = None
     for _ in range(5):
         try:
@@ -2401,7 +2439,8 @@ def _gemini_fetch(ab, session, src, remaining, emit) -> tuple[bytes, JsonDict]:
                 raise GatewayError(
                     "generated image came back as invalid base64") from None
             return data, {"content_type": "image/png", "source": "gemini",
-                          "width": res.get("w"), "height": res.get("h")}
+                          "width": res.get("w"), "height": res.get("h"),
+                          "transport": "canvas", "provenance": "stripped"}
         last = res
         time.sleep(2.0)  # nearly always just "img not decoded yet"
     raise GatewayError(f"failed to read the generated image off the page: {last}")
@@ -2513,9 +2552,12 @@ def run_gemini(
         _gemini_submit(ab, session, chosen_composer, text, remaining, emit)
         src = _gemini_poll(ab, session, baseline, deadline, remaining, emit)
         data, meta = _gemini_fetch(ab, session, src, remaining, emit)
-        emit("note: the PNG is re-encoded off a canvas, which drops Google's "
-             "C2PA provenance manifest (the imperceptible SynthID watermark "
-             "in the pixels is unaffected)")
+        if meta.get("provenance") == "stripped":
+            emit("note: the blob could not be downloaded byte-exact, so the "
+                 "PNG was re-encoded off a canvas — that drops Google's C2PA "
+                 "provenance manifest (the imperceptible SynthID watermark in "
+                 "the pixels is unaffected). Upgrading chrome-use usually "
+                 "restores the byte-exact path")
         if not refs:
             emit("note: text-to-image results carry a visible Gemini watermark "
                  "at the bottom-right")

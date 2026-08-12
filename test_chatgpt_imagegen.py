@@ -2068,5 +2068,55 @@ class ContentTypeMismatch(unittest.TestCase):
         self.assertIn("_default_out_path(args.prompt, _actual_fmt)", src)
 
 
+class GeminiBlobDownload(unittest.TestCase):
+    """issue #27 — prefer the byte-exact blob route so Google's C2PA
+    provenance manifest survives; fall back to the canvas, never fail."""
+
+    def test_non_blob_src_is_not_attempted(self):
+        self.assertIsNone(cig._gemini_blob_download(
+            "chrome-use", "s", "https://x/y.png", lambda: 30.0))
+
+    def test_blob_bytes_are_returned_with_the_sniffed_type(self):
+        png = (b"\x89PNG\r\n\x1a\n" + b"\x00" * 24)
+
+        def fake_ab(ab, *a, **kw):
+            self.assertEqual(a[0], "download-url")
+            Path(a[2]).write_bytes(png)
+            return ""
+
+        with unittest.mock.patch.object(cig, "_ab", fake_ab):
+            data, meta = cig._gemini_blob_download(
+                "chrome-use", "s", "blob:https://gemini.google.com/x",
+                lambda: 30.0)
+        self.assertEqual(data, png)
+        self.assertEqual(meta["content_type"], "image/png")
+        self.assertEqual(meta["provenance"], "preserved")
+
+    def test_old_chrome_use_falls_back_instead_of_raising(self):
+        def boom(*a, **kw):
+            raise cig.GatewayError("Invalid download URL: expected http://")
+
+        with unittest.mock.patch.object(cig, "_ab", boom):
+            self.assertIsNone(cig._gemini_blob_download(
+                "chrome-use", "s", "blob:https://gemini.google.com/x",
+                lambda: 30.0))
+
+    def test_non_image_payload_is_treated_as_a_miss(self):
+        def fake_ab(ab, *a, **kw):
+            Path(a[2]).write_bytes(b"<html>nope</html>")
+            return ""
+
+        with unittest.mock.patch.object(cig, "_ab", fake_ab):
+            self.assertIsNone(cig._gemini_blob_download(
+                "chrome-use", "s", "blob:https://gemini.google.com/x",
+                lambda: 30.0))
+
+    def test_canvas_path_still_labels_itself_as_provenance_stripped(self):
+        src = Path(cig.__file__).read_text()
+        self.assertIn('"transport": "canvas", "provenance": "stripped"', src)
+        # The C2PA warning must not fire on the byte-exact path.
+        self.assertIn('if meta.get("provenance") == "stripped":', src)
+
+
 if __name__ == "__main__":
     unittest.main()
