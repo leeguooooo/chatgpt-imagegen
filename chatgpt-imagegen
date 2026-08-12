@@ -59,13 +59,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.23.0"
+__version__ = "0.23.1"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.23.1]: gemini 后端改走 blob 字节直下,保住 Google 签名的 C2PA 溯源清单(旧的 canvas 重编码会把它连同所有元数据一起丢掉);blob 下载失败时静默回退 canvas,丢溯源好过丢图
 # WHATSNEW[0.23.0]: 参考图可指定角色——新增 --ref-role 与 --style-ref/--composition-ref(借构图不抄主体);agy 后端开始遵守 --stall-timeout(卡死不再干等到总超时);后端返回的格式与 --format 不一致时明确告警,不指定 -o 时按真实类型命名
 # WHATSNEW[0.22.0]: 新增 Gemini 双后端:--backend gemini(驱动登录着的 Gemini 浏览器)与 --backend agy(Antigravity CLI 无头);两者额度实测互相独立,可互为兜底;都不进 auto,需点名使用
 # WHATSNEW[0.21.3]: SKILL.md 描述精简到 1024 字符内,修好 pi 加载时的超限告警;SKILL 版本号跟 CLI 对齐

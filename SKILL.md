@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.23.0"
+version: "0.23.1"
 description: >-
   Generate new raster images and looping GIF/WebP animations with the user's
   ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
@@ -51,7 +51,7 @@ Behaviour worth knowing before recommending one:
 
 - **Visible watermark.** `gemini` **text-to-image** results carry the Gemini "sparkle" glyph, fixed at 65 px in from the bottom-right corner (measured identical across 5 runs at 1024×559). Image-to-image results do not. `agy` results have no visible mark.
 - **Both are watermarked invisibly regardless.** `agy` output carries a Google-signed C2PA manifest whose own description reads *"Applied imperceptible SynthID watermark"*. The SynthID signal is in the pixels and survives any re-encode.
-- **`gemini` drops the C2PA manifest.** Its bytes are read back through a canvas (Gemini renders results from a `blob:` src that neither in-page `fetch()` nor `chrome-use download-url` can read), and re-encoding to PNG strips metadata. The run prints a note saying so. `agy` copies the file, so its manifest survives.
+- **`gemini` keeps the C2PA manifest on current chrome-use.** Gemini renders results from a `blob:` src, which in-page `fetch()` still cannot read; `chrome-use download-url` now resolves the blob inside the page and writes the original bytes to disk, so the signed manifest survives. Older chrome-use rejected `blob:` outright, leaving only a canvas re-encode — that path is still the fallback and still strips metadata, and the run prints a note naming the upgrade when it has to take it. `agy` copies the file, so its manifest always survives.
 - **`--size` controls the aspect ratio on `gemini`, not the pixel count.** The chat surface has no size widget, so the ratio is requested in words — and honoured: asking square returned 1024×1024, asking 3:2 returned 1024×687, asking 2:3 returned 687×1024. What you cannot pin is the absolute resolution. With nothing requested Gemini defaults to 16:9, so the backend always asks for *something* (square when `--size` is `auto`). Real dimensions land in the run meta.
 - **The dedicated image model is selected automatically.** Before generating, the backend switches the composer to Gemini's image tool, which reports "generated using Nano Banana 2" — otherwise the prompt is answered by whatever chat model is active (seen: Flash-Lite). Best-effort: if the menu moved, the run continues on the chat default rather than failing. `--no-gemini-image-tool` skips the attempt. It does **not** remove the watermark or change the default ratio — both were checked against it directly.
 - **Pin the profile.** Nearly every Chrome profile is signed in to *some* Google account, and the cookie says nothing about which one holds the subscription — a probe run landed on an account whose "Google AI Pro subscription has expired" page has no composer at all. Set `--gemini-profile` / `CHATGPT_IMAGEGEN_GEMINI_PROFILE`. `doctor` warns when nothing is pinned.
