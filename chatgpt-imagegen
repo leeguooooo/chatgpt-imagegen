@@ -48,6 +48,7 @@ import ssl
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -58,13 +59,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.22.0"
+__version__ = "0.23.0"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.23.0]: 参考图可指定角色——新增 --ref-role 与 --style-ref/--composition-ref(借构图不抄主体);agy 后端开始遵守 --stall-timeout(卡死不再干等到总超时);后端返回的格式与 --format 不一致时明确告警,不指定 -o 时按真实类型命名
 # WHATSNEW[0.22.0]: 新增 Gemini 双后端:--backend gemini(驱动登录着的 Gemini 浏览器)与 --backend agy(Antigravity CLI 无头);两者额度实测互相独立,可互为兜底;都不进 auto,需点名使用
 # WHATSNEW[0.21.3]: SKILL.md 描述精简到 1024 字符内,修好 pi 加载时的超限告警;SKILL 版本号跟 CLI 对齐
 # WHATSNEW[0.21.2]: 修复 Python 3.13+ 上画廊全线连不上(证书链严格校验),style search/pull 与 --style-online 恢复可用
@@ -552,8 +554,29 @@ def _downsize_reference(src_path: str) -> bytes | None:
 
 # ---------- request ----------
 
+def _composition_clause(n_composition_refs: int, has_other_refs: bool) -> str:
+    """Sentence describing the trailing composition references (or "").
+
+    A composition ref is the opposite of a character ref: the *framing* is
+    borrowed, the *content* must not be. Without this role every ad-hoc `--ref`
+    was called the canonical subject, so "use the reference only for the casual
+    smartphone feeling, replace the person" fought an injected instruction the
+    user's own prompt could not override (issue #26).
+    """
+    if not n_composition_refs:
+        return ""
+    which = (f"The last {n_composition_refs} attached image(s) are"
+             if has_other_refs else
+             f"The {n_composition_refs} attached image(s) are")
+    return (f" {which} composition references — borrow only their framing, "
+            f"crop, camera angle, lighting feel and layout; do NOT reproduce "
+            f"their subject, identity or content, and render a different "
+            f"subject instead.")
+
+
 def _build_web_text(
-    prompt: str, size: str, n_character_refs: int = 0, n_style_refs: int = 0
+    prompt: str, size: str, n_character_refs: int = 0, n_style_refs: int = 0,
+    n_composition_refs: int = 0,
 ) -> str:
     """Natural-language image request for the ChatGPT *page* (web backend).
 
@@ -593,6 +616,7 @@ def _build_web_text(
         )
     else:
         text = f"Create an image with your built-in image generator: {prompt}."
+    text += _composition_clause(n_composition_refs, bool(n_char or n_style))
     if size and size != "auto":
         text += f" Aspect ratio / size: {size}."
     return text
@@ -601,6 +625,7 @@ def _build_web_text(
 def _build_user_text(
     prompt: str, size: str, output_format: str,
     n_character_refs: int = 0, n_style_refs: int = 0,
+    n_composition_refs: int = 0,
 ) -> str:
     """Natural-language instruction for the **codex** backend.
 
@@ -642,14 +667,16 @@ def _build_user_text(
             f"Request: {prompt}. "
             f"Output format: {output_format}."
         )
+    user_text += _composition_clause(n_composition_refs, bool(n_char or n_style))
     if size and size != "auto":
         user_text += f" Size: {size}."
     user_text += " Do not include explanatory text — produce only the image."
     return user_text
 
 
-def _ref_counts(args: argparse.Namespace, refs: list | None) -> tuple[int, int]:
-    """(n_character_refs, n_style_refs) for the active run.
+def _ref_counts(args: argparse.Namespace,
+                refs: list | None) -> tuple[int, int, int]:
+    """(n_character_refs, n_style_refs, n_composition_refs) for the active run.
 
     main() partitions assets and stores the counts on ``args``; if they're
     absent (a caller that passes bare refs without the asset machinery) we fall
@@ -659,14 +686,15 @@ def _ref_counts(args: argparse.Namespace, refs: list | None) -> tuple[int, int]:
     n_char = getattr(args, "n_character_refs", None)
     n_style = getattr(args, "n_style_refs", None)
     if n_char is None or n_style is None:
-        return (len(refs) if refs else 0), 0
-    return n_char, n_style
+        return (len(refs) if refs else 0), 0, 0
+    return n_char, n_style, getattr(args, "n_composition_refs", 0) or 0
 
 
 def _build_payload(
     prompt: str, size: str, output_format: str, model: str,
     refs: list[tuple[str, str]] | None = None,
     n_character_refs: int = 0, n_style_refs: int = 0,
+    n_composition_refs: int = 0,
 ) -> JsonDict:
     """Build the codex/responses body. When `refs` (list of (b64, mime)) is
     given, attach each as an `input_image` content part ahead of the text and
@@ -677,7 +705,8 @@ def _build_payload(
     """
     user_text = _build_user_text(
         prompt, size, output_format,
-        n_character_refs=n_character_refs, n_style_refs=n_style_refs)
+        n_character_refs=n_character_refs, n_style_refs=n_style_refs,
+        n_composition_refs=n_composition_refs)
 
     image_tool: JsonDict = {"type": "image_generation", "output_format": output_format}
     if size and size != "auto":
@@ -1645,10 +1674,11 @@ def run_web(
     # blocked on the serialize lock (issue #7) before reaching here, and that
     # queue wait must not eat into the --timeout image budget.
     deadline = time.monotonic() + args.timeout
-    _n_char, _n_style = _ref_counts(args, refs)
+    _n_char, _n_style, _n_comp = _ref_counts(args, refs)
     user_text = _build_web_text(
         args.gen_prompt, args.size,
-        n_character_refs=_n_char, n_style_refs=_n_style)
+        n_character_refs=_n_char, n_style_refs=_n_style,
+        n_composition_refs=_n_comp)
 
     def emit(msg: str) -> None:
         if progress:
@@ -2083,7 +2113,8 @@ def _find_agy() -> str | None:
     return None
 
 
-def _build_reference_framing(n_character_refs: int, n_style_refs: int) -> str:
+def _build_reference_framing(n_character_refs: int, n_style_refs: int,
+                             n_composition_refs: int = 0) -> str:
     """One sentence describing what the attached references ARE.
 
     Shared by the gemini and agy backends, and deliberately mirrors
@@ -2093,22 +2124,25 @@ def _build_reference_framing(n_character_refs: int, n_style_refs: int) -> str:
     that called every reference "the subject" answered a prompt about a glass
     bottle with a four-panel comic strip of the style reference's cartoon dog.
     """
+    tail = _composition_clause(n_composition_refs, bool(n_character_refs or n_style_refs))
     if n_character_refs and n_style_refs:
+        which = "next" if n_composition_refs else "remaining"
         return (f"The first {n_character_refs} reference image(s) show a "
                 f"recurring character — reproduce them faithfully as the "
-                f"subject. The remaining {n_style_refs} are style references: "
-                f"match their aesthetic, do NOT copy their content.")
+                f"subject. The {which} {n_style_refs} are style references: "
+                f"match their aesthetic, do NOT copy their content." + tail)
     if n_character_refs:
         return ("Keep the reference image(s) as the canonical subject — "
-                "reproduce their shapes, colours, and texture faithfully.")
+                "reproduce their shapes, colours, and texture faithfully." + tail)
     if n_style_refs:
         return ("Match the visual style of the reference image(s); "
-                "do NOT copy their content or subject matter.")
-    return ""
+                "do NOT copy their content or subject matter." + tail)
+    return tail.strip()
 
 
 def _build_gemini_text(prompt: str, size: str,
-                       n_character_refs: int = 0, n_style_refs: int = 0) -> str:
+                       n_character_refs: int = 0, n_style_refs: int = 0,
+                       n_composition_refs: int = 0) -> str:
     """Prompt text for the Gemini composer.
 
     Gemini's chat surface has no size control, so the aspect ratio has to be
@@ -2126,9 +2160,11 @@ def _build_gemini_text(prompt: str, size: str,
              "1536x1024": "landscape 3:2"}.get(size)
     if ratio is None and (not size or size == "auto"):
         ratio = "square 1:1"
-    bits = ["Generate an image." if not (n_character_refs or n_style_refs)
+    bits = ["Generate an image."
+            if not (n_character_refs or n_style_refs or n_composition_refs)
             else "Using the attached reference image(s), generate a new image."]
-    framing = _build_reference_framing(n_character_refs, n_style_refs)
+    framing = _build_reference_framing(n_character_refs, n_style_refs,
+                                       n_composition_refs)
     if framing:
         bits.append(framing)
     bits.append(f"Scene: {prompt}.")
@@ -2470,9 +2506,10 @@ def run_gemini(
         if not isinstance(baseline, list):
             baseline = []
 
-        n_char, n_style = _ref_counts(args, refs)
+        n_char, n_style, n_comp = _ref_counts(args, refs)
         text = _build_gemini_text(args.gen_prompt, args.size,
-                                  n_character_refs=n_char, n_style_refs=n_style)
+                                  n_character_refs=n_char, n_style_refs=n_style,
+                                  n_composition_refs=n_comp)
         _gemini_submit(ab, session, chosen_composer, text, remaining, emit)
         src = _gemini_poll(ab, session, baseline, deadline, remaining, emit)
         data, meta = _gemini_fetch(ab, session, src, remaining, emit)
@@ -2521,9 +2558,65 @@ def _agy_extract_path(stdout: str) -> str | None:
     return None
 
 
+def _run_agy_watched(
+    cmd: list[str], cwd: str, total_timeout: float, stall_timeout: float,
+) -> tuple[int, str, str]:
+    """Run `cmd`, killing it after `stall_timeout` seconds of total silence.
+
+    `subprocess.run(timeout=...)` only enforces the *total* budget, so a
+    wedged agy stayed alive for the full --timeout no matter what
+    --stall-timeout said (issue #24). Draining both pipes on reader threads and
+    stamping the time of every chunk gives agy the same idle contract the codex
+    and web backends already honour. Returns (returncode, stdout, stderr).
+    """
+    proc = subprocess.Popen(cmd, cwd=cwd, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    chunks: dict[str, list[str]] = {"out": [], "err": []}
+    last = [time.monotonic()]
+
+    def drain(stream, key: str) -> None:
+        for line in iter(stream.readline, ""):
+            last[0] = time.monotonic()
+            chunks[key].append(line)
+        stream.close()
+
+    threads = [
+        threading.Thread(target=drain, args=(proc.stdout, "out"), daemon=True),
+        threading.Thread(target=drain, args=(proc.stderr, "err"), daemon=True),
+    ]
+    for t in threads:
+        t.start()
+
+    deadline = time.monotonic() + total_timeout
+    stalled = False
+    while proc.poll() is None:
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        if stall_timeout > 0 and now - last[0] >= stall_timeout:
+            stalled = True
+            break
+        time.sleep(0.2)
+
+    if proc.poll() is None:
+        proc.kill()
+        proc.wait()
+        for t in threads:
+            t.join(timeout=1.0)
+        if stalled:
+            raise GatewayError(
+                f"agy stalled: no output for ~{int(stall_timeout)}s "
+                f"(raise --stall-timeout, or drop it to 0 to wait out the "
+                f"full --timeout)")
+        raise subprocess.TimeoutExpired(cmd, total_timeout)
+    for t in threads:
+        t.join(timeout=2.0)
+    return proc.returncode, "".join(chunks["out"]), "".join(chunks["err"])
+
+
 def run_agy(
     args: argparse.Namespace, progress: bool, start: float,
-    refs: list[str] | None = None,
+    refs: list[str] | None = None, stall_timeout: float = 0.0,
 ) -> tuple[bytes, JsonDict]:
     """Generate an image through the Antigravity CLI (`agy`), headless.
 
@@ -2548,9 +2641,9 @@ def run_agy(
     intent = f"Generate an image. Scene: {args.gen_prompt}."
     if refs:
         resolved = [_resolve_ref_path(r)[0] for r in refs]
-        n_char, n_style = _ref_counts(args, refs)
+        n_char, n_style, n_comp = _ref_counts(args, refs)
         intent += ("\nReference images, in order: " + ", ".join(resolved)
-                   + "\n" + _build_reference_framing(n_char, n_style))
+                   + "\n" + _build_reference_framing(n_char, n_style, n_comp))
     if args.size and args.size != "auto":
         intent += f"\nTarget size: {args.size} pixels."
 
@@ -2565,18 +2658,18 @@ def run_agy(
 
     emit("running agy (this bills the Antigravity account, not Codex)")
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              cwd=tmpdir, timeout=max(60.0, args.timeout))
+        rc, out, err = _run_agy_watched(
+            cmd, tmpdir, max(60.0, args.timeout), stall_timeout)
     except subprocess.TimeoutExpired:
         raise GatewayError(f"agy timed out after {args.timeout}s") from None
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
-        raise GatewayError(f"agy failed (exit {proc.returncode}): "
+    if rc != 0:
+        tail = (err or out or "").strip().splitlines()[-3:]
+        raise GatewayError(f"agy failed (exit {rc}): "
                            f"{' / '.join(tail)[:300]}")
 
-    path = out_hint if Path(out_hint).is_file() else _agy_extract_path(proc.stdout)
+    path = out_hint if Path(out_hint).is_file() else _agy_extract_path(out)
     if not path or not Path(path).is_file():
-        tail = " / ".join(proc.stdout.strip().splitlines()[-3:])[:300]
+        tail = " / ".join(out.strip().splitlines()[-3:])[:300]
         raise GatewayError(
             "agy ran but no image file was produced. It said: " + tail)
 
@@ -2612,6 +2705,36 @@ def _maybe_warn_extension_mismatch(out_path: Path, fmt: str) -> None:
             f"writing {fmt} bytes anyway",
             file=sys.stderr,
         )
+
+
+_MIME_TO_FMT = {"image/png": "png", "image/jpeg": "jpeg", "image/webp": "webp",
+                "image/gif": "gif"}
+
+
+def _fmt_from_mime(content_type: str | None) -> str | None:
+    """'image/png' → 'png'. None when the type is unknown/unsniffable."""
+    return _MIME_TO_FMT.get((content_type or "").split(";")[0].strip().lower())
+
+
+def _warn_content_type_mismatch(out_path: Path, fmt: str,
+                                content_type: str | None) -> None:
+    """Warn when the bytes we're about to write are NOT the requested format.
+
+    `_maybe_warn_extension_mismatch` only compares --format against the
+    filename, so an agy run that answered `--format jpeg` with PNG bytes wrote
+    PNG into a .jpg and said nothing (issue #25). We cannot transcode — the CLI
+    is standard-library-only, no Pillow — so the contract is: always write the
+    real bytes, never lie about them silently.
+    """
+    actual = _fmt_from_mime(content_type)
+    if not actual or actual == fmt:
+        return
+    print(
+        f"   .. warning: asked for --format={fmt} but the backend returned "
+        f"{actual} bytes; {out_path.name} contains {actual}, not {fmt} "
+        f"(no transcode: this CLI is standard-library-only)",
+        file=sys.stderr,
+    )
 
 
 def _positive_int(value: str) -> int:
@@ -2923,10 +3046,11 @@ def run_codex(
             )
 
     version = _detect_codex_version()
-    n_char, n_style = _ref_counts(args, refs)
+    n_char, n_style, n_comp = _ref_counts(args, refs)
     payload = _build_payload(args.gen_prompt, args.size, args.format, args.model,
                              refs=loaded_refs,
-                             n_character_refs=n_char, n_style_refs=n_style)
+                             n_character_refs=n_char, n_style_refs=n_style,
+                             n_composition_refs=n_comp)
 
     with _concurrency_slot("codex", _backend_limit("codex", CODEX_CONCURRENCY_DEFAULT),
                            progress, start):
@@ -3031,7 +3155,8 @@ def _dispatch(
     # existing `auto` user there would change their images without their asking.
     if args.backend == "agy":
         try:
-            return run_agy(args, progress, start, refs=refs)
+            return run_agy(args, progress, start, refs=refs,
+                           stall_timeout=stall_timeout)
         except GatewayError as e:
             msg = str(e)
             # The two Gemini surfaces draw on SEPARATE quotas — proven, not
@@ -3994,15 +4119,25 @@ def _ensure_styles_local(doc: dict, names: list[str]) -> bool:
 
 
 def _collect_refs(doc: dict, active_names: list[str],
-                  adhoc_refs: list[str] | None) -> list[dict]:
+                  adhoc_refs: list[str] | None,
+                  adhoc_role: str = "character",
+                  adhoc_style_refs: list[str] | None = None,
+                  adhoc_composition_refs: list[str] | None = None) -> list[dict]:
     """Build the ordered reference list for a run.
 
     Each item is ``{ref, group, label}`` where ``ref`` is a path/URL to attach,
-    ``group`` is "character" or "style", and ``label`` names it for logging.
-    Ordering (deterministic): character group first, then style group. Within
-    the character group: character assets in active order, then the ad-hoc
-    ``--ref`` images last (treated as character/subject, preserving the old
-    is_edit behavior). Within the style group: active order.
+    ``group`` is "character", "style" or "composition", and ``label`` names it
+    for logging. Ordering (deterministic): character group, then style, then
+    composition. Within the character group: character assets in active order,
+    then the ad-hoc ``--ref`` images last (treated as character/subject by
+    default, preserving the old is_edit behavior). Within the style group:
+    active order, then ad-hoc ``--style-ref``.
+
+    ``adhoc_role`` re-homes the plain ``--ref`` images (``--ref-role``), while
+    ``--style-ref`` / ``--composition-ref`` name a role per image. All three
+    exist because a bare ``--ref`` used to be unconditionally the canonical
+    subject, which made "borrow the framing, replace the person" impossible to
+    express (issue #26).
 
     Asset reference files must exist on disk — a missing one exits with an error
     naming the asset and the expected path (never silently skipped).
@@ -4010,6 +4145,7 @@ def _collect_refs(doc: dict, active_names: list[str],
     styles = doc.get("styles", {})
     char_items: list[dict] = []
     style_items: list[dict] = []
+    comp_items: list[dict] = []
     for name in active_names:
         entry = styles[name]
         group = "character" if entry.get("kind") == "character" else "style"
@@ -4024,9 +4160,15 @@ def _collect_refs(doc: dict, active_names: list[str],
                     f"(`chatgpt-imagegen style rm-ref {name} {fn}`).")
             rec = {"ref": str(fpath), "group": group, "label": f"{name}/{fn}"}
             (char_items if group == "character" else style_items).append(rec)
+    buckets = {"character": char_items, "style": style_items,
+               "composition": comp_items}
     for r in (adhoc_refs or []):
-        char_items.append({"ref": r, "group": "character", "label": r})
-    return char_items + style_items
+        buckets[adhoc_role].append({"ref": r, "group": adhoc_role, "label": r})
+    for r in (adhoc_style_refs or []):
+        style_items.append({"ref": r, "group": "style", "label": r})
+    for r in (adhoc_composition_refs or []):
+        comp_items.append({"ref": r, "group": "composition", "label": r})
+    return char_items + style_items + comp_items
 
 
 def _cap_refs(ordered: list[dict], cap: int) -> tuple[list[dict], list[dict]]:
@@ -4729,7 +4871,27 @@ def main() -> int:
         help="Reference image for image-to-image (repeatable). A local path or "
              "http(s) URL. When given, generation edits the reference(s) instead "
              "of rendering from text. Works on both backends: web attaches it to "
-             "the composer (no Codex-usage), codex sends it as an input_image.",
+             "the composer (no Codex-usage), codex sends it as an input_image. "
+             "Its role defaults to subject; see --ref-role.",
+    )
+    parser.add_argument(
+        "--ref-role",
+        choices=["subject", "style", "composition"],
+        default="subject",
+        help="What every --ref image IS (default: subject). subject: preserve "
+             "its identity/appearance. style: match the aesthetic, do not copy "
+             "the content. composition: borrow framing/crop/camera only and "
+             "render a different subject.",
+    )
+    parser.add_argument(
+        "--style-ref", action="append", default=None, metavar="PATH_OR_URL",
+        help="Shorthand for a --ref with role=style (repeatable). Mixes freely "
+             "with --ref and --composition-ref.",
+    )
+    parser.add_argument(
+        "--composition-ref", action="append", default=None, metavar="PATH_OR_URL",
+        help="Shorthand for a --ref with role=composition (repeatable): borrow "
+             "framing/crop/camera angle, do NOT reproduce the subject.",
     )
     parser.add_argument(
         "--backend",
@@ -4893,15 +5055,24 @@ def main() -> int:
         _gen_prompt = _compose_prompt(_gen_prompt, _snip)
     args.gen_prompt = _build_animation_prompt(_gen_prompt) if animate_mode else _gen_prompt
 
-    _ordered_refs = _collect_refs(_styles_doc, _active, args.ref)
+    _ordered_refs = _collect_refs(
+        _styles_doc, _active, args.ref,
+        adhoc_role={"subject": "character"}.get(
+            getattr(args, "ref_role", "subject"), getattr(args, "ref_role", "subject")),
+        adhoc_style_refs=getattr(args, "style_ref", None),
+        adhoc_composition_refs=getattr(args, "composition_ref", None))
     if _online_refs:
-        # Keep the character-first grouping stable after merging online refs.
+        # Keep the character → style → composition grouping stable after
+        # merging online refs (sorted() is stable, so intra-group order holds).
+        _group_rank = {"character": 0, "style": 1, "composition": 2}
         _ordered_refs = sorted(_ordered_refs + _online_refs,
-                               key=lambda r: 0 if r["group"] == "character" else 1)
+                               key=lambda r: _group_rank.get(r["group"], 1))
     _kept_refs, _dropped_refs = _cap_refs(_ordered_refs, REF_ATTACH_CAP)
     args.resolved_refs = [r["ref"] for r in _kept_refs]
     args.n_character_refs = sum(1 for r in _kept_refs if r["group"] == "character")
     args.n_style_refs = sum(1 for r in _kept_refs if r["group"] == "style")
+    args.n_composition_refs = sum(
+        1 for r in _kept_refs if r["group"] == "composition")
 
     stall_timeout = float(min(args.stall_timeout, args.timeout))
     start = time.monotonic()
@@ -4967,9 +5138,20 @@ def main() -> int:
         except AnimationError as error:
             sys.exit(f"animation error: {error}\nsprite sheet kept at {sprite_path}")
     else:
-        out_path = Path(args.out) if args.out else _default_out_path(args.prompt, args.format)
-        if args.out and progress:
-            _maybe_warn_extension_mismatch(out_path, args.format)
+        # What the bytes actually ARE beats what was asked for: when the caller
+        # left the filename to us, name the file after the sniffed type so a
+        # backend that ignored --format can't produce a .jpg full of PNG.
+        _actual_fmt = _fmt_from_mime(meta.get("content_type")) or args.format
+        if args.out:
+            out_path = Path(args.out)
+            if progress:
+                _maybe_warn_extension_mismatch(out_path, args.format)
+            # Data-affecting, so unconditional (like the over-cap ref warning):
+            # a silently mistyped file breaks downstream image pipelines.
+            _warn_content_type_mismatch(out_path, args.format,
+                                        meta.get("content_type"))
+        else:
+            out_path = _default_out_path(args.prompt, _actual_fmt)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_bytes(image_bytes)
     # Record this image so `style add --from-last` / `add-ref --from-last` can

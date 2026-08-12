@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.22.0"
+version: "0.23.0"
 description: >-
   Generate new raster images and looping GIF/WebP animations with the user's
   ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
@@ -104,7 +104,7 @@ That writes `~/.codex/auth.json`, which the codex backend reads. No `OPENAI_API_
 
 - The user wants an SVG icon that matches an in-repo vector set — edit those instead.
 - The task is better solved with code (HTML/CSS, canvas, Mermaid, PlantUML).
-- The user already has an image on disk and wants to *edit* it — this skill is generate-only.
+- The user wants an existing image **modified in place** — retouching, cropping, text/logo removal, upscaling, background knock-out. This skill always renders a *new* image; it cannot return an edited copy of the original's pixels. (Passing an image as a *reference* with `--ref` / `--style-ref` / `--composition-ref` is supported and encouraged — that's re-generation guided by the image, not editing it.)
 - The user explicitly needs **true `quality=high`** or **`background=transparent`** — the subscription path caps quality at `medium` and rejects transparent. Tell the user to use the official `/v1/images/generations` API with their `OPENAI_API_KEY` for those cases.
 - The deliverable will be served to end users (e.g. a public service generating images for visitors) — that violates OpenAI's ToS for personal subscriptions. Refuse and explain.
 
@@ -197,7 +197,7 @@ This is what lets a user **pin their own cartoon character or house style once a
 - `style rm NAME` deletes the entry **and** its images; `style clear` empties the active set; `style reset` wipes the library back to empty.
 - `styles` (plural) is accepted as an alias for `style`.
 
-**Behavior:** `--ref` images passed at generation time are treated as the subject and stack on top of the active assets. At most **4** reference images attach per run; if more resolve, the first 4 (character-first) are used and the dropped ones are logged to stderr (never silent). Resolution order: `--no-style` > `--style NAME…` > active default set > none. **There are no built-in styles** — the library starts empty and styles come from the gallery (see the next section). A `--style NAME` that isn't in your library yet is **auto-pulled** from the gallery and saved (so it's offline-usable next time); if the name isn't on the gallery either, it fails fast pointing you at `style search`.
+**Behavior:** `--ref` images passed at generation time are treated as the subject by default and stack on top of the active assets. Say what a reference *is* with `--ref-role subject|style|composition`, or the per-image shorthands `--style-ref IMG` (match the aesthetic, don't copy the content) and `--composition-ref IMG` (borrow framing/crop/camera angle only, render a different subject — use this to anonymise a portrait or to keep a layout while replacing the person). At most **4** reference images attach per run; if more resolve, the first 4 (character-first) are used and the dropped ones are logged to stderr (never silent). Resolution order: `--no-style` > `--style NAME…` > active default set > none. **There are no built-in styles** — the library starts empty and styles come from the gallery (see the next section). A `--style NAME` that isn't in your library yet is **auto-pulled** from the gallery and saved (so it's offline-usable next time); if the name isn't on the gallery either, it fails fast pointing you at `style search`.
 
 ### Platform styles (drawstyle)
 

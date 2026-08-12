@@ -44,7 +44,8 @@ Got a **Gemini** subscription too? Two more backends use it instead of OpenAI: `
 
 ```bash
 chatgpt-imagegen "moody mountain sunset" -o web/hero.png --size 1536x1024
-chatgpt-imagegen "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg   # edit a reference
+chatgpt-imagegen "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg   # reference the subject
+chatgpt-imagegen "a different fictional person" --composition-ref photo.jpg        # borrow the framing, not the face
 chatgpt-imagegen "a robot mascot" --style doodle                                    # apply a gallery style (auto-pulled + saved)
 chatgpt-imagegen animate "a dog happily wagging its tail" --style-online snoopy --also-gif
 OUT=$(chatgpt-imagegen "icon" --quiet)                                              # capture the path

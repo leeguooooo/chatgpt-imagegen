@@ -44,7 +44,8 @@ sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
 
 ```bash
 chatgpt-imagegen "阴郁的山间日落" -o web/hero.png --size 1536x1024
-chatgpt-imagegen "改成暖调黄昏、电影感 35mm" -i photo.jpg          # 改一张参考图
+chatgpt-imagegen "改成暖调黄昏、电影感 35mm" -i photo.jpg          # 以参考图为主体
+chatgpt-imagegen "换成另一个虚构的人" --composition-ref photo.jpg  # 只借构图,不复刻人脸
 chatgpt-imagegen "一个机器人吉祥物" --style doodle                  # 套用画廊风格(本地没有会自动拉取并保存)
 chatgpt-imagegen animate "小狗开心地摇尾巴" --style-online snoopy --also-gif
 OUT=$(chatgpt-imagegen "icon" --quiet)                             # 只拿路径(便于管道)

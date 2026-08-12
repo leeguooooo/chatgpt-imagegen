@@ -9,9 +9,13 @@ ref download) so a refactor that breaks them fails loudly.
 Run:  python3 -m unittest test_chatgpt_imagegen -v
 """
 
+import argparse
 import importlib.machinery
 import importlib.util
+import inspect
 import io
+import sys
+import time
 import json
 import os
 import re
@@ -1954,6 +1958,114 @@ class GoogleProfileDetection(unittest.TestCase):
         self.assertEqual(sig.parameters["host_like"].default, "%chatgpt.com%")
         self.assertIn("__Secure-next-auth.session-token",
                       sig.parameters["name_clause"].default)
+
+
+class RefRoles(unittest.TestCase):
+    """issue #26 — an ad-hoc --ref must be expressible as style/composition,
+    not only as the canonical subject."""
+
+    def test_ref_role_rehomes_adhoc_refs(self):
+        with _tmp_xdg():
+            doc = cig._load_styles()
+            for role in ("character", "style", "composition"):
+                ordered = cig._collect_refs(doc, [], ["/a.png"], adhoc_role=role)
+                self.assertEqual([r["group"] for r in ordered], [role])
+
+    def test_role_shorthands_order_character_style_composition(self):
+        with _tmp_xdg():
+            doc = cig._load_styles()
+            ordered = cig._collect_refs(
+                doc, [], ["/subj.png"],
+                adhoc_style_refs=["/st.png"],
+                adhoc_composition_refs=["/comp.png"])
+            self.assertEqual([r["group"] for r in ordered],
+                             ["character", "style", "composition"])
+            self.assertEqual([r["ref"] for r in ordered],
+                             ["/subj.png", "/st.png", "/comp.png"])
+
+    def test_composition_only_never_claims_the_reference_as_subject(self):
+        for text in (
+            cig._build_web_text("a man", "auto", n_composition_refs=1),
+            cig._build_user_text("a man", "auto", "png", n_composition_refs=1),
+            cig._build_gemini_text("a man", "auto", n_composition_refs=1),
+            cig._build_reference_framing(0, 0, 1),
+        ):
+            self.assertIn("composition reference", text)
+            self.assertIn("do NOT reproduce", text)
+            self.assertNotIn("canonical subject", text)
+
+    def test_zero_composition_refs_leaves_existing_wording_untouched(self):
+        self.assertEqual(cig._composition_clause(0, True), "")
+        self.assertEqual(
+            cig._build_web_text("a cat", "auto", n_character_refs=1),
+            cig._build_web_text("a cat", "auto", n_character_refs=1,
+                                n_composition_refs=0))
+
+    def test_ref_counts_falls_back_to_subject_without_the_asset_machinery(self):
+        self.assertEqual(
+            cig._ref_counts(argparse.Namespace(), ["/a.png", "/b.png"]), (2, 0, 0))
+
+
+class AgyStallTimeout(unittest.TestCase):
+    """issue #24 — --stall-timeout was documented but only --timeout enforced."""
+
+    def test_silent_child_is_killed_at_the_idle_deadline(self):
+        t0 = time.monotonic()
+        with self.assertRaises(cig.GatewayError) as ctx:
+            cig._run_agy_watched(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                tempfile.gettempdir(), total_timeout=30.0, stall_timeout=0.6)
+        self.assertLess(time.monotonic() - t0, 10.0)
+        self.assertIn("stalled", str(ctx.exception))
+
+    def test_chatty_child_survives_a_shorter_stall_window(self):
+        rc, out, _err = cig._run_agy_watched(
+            [sys.executable, "-c",
+             "import sys,time\n"
+             "for _ in range(6):\n"
+             "    print('tick', flush=True); time.sleep(0.2)"],
+            tempfile.gettempdir(), total_timeout=30.0, stall_timeout=0.6)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.count("tick"), 6)
+
+    def test_stdout_and_exit_code_are_preserved(self):
+        rc, out, err = cig._run_agy_watched(
+            [sys.executable, "-c",
+             "import sys; print('o'); print('e', file=sys.stderr); sys.exit(3)"],
+            tempfile.gettempdir(), total_timeout=10.0, stall_timeout=5.0)
+        self.assertEqual((rc, out.strip(), err.strip()), (3, "o", "e"))
+
+    def test_run_agy_accepts_a_stall_timeout(self):
+        self.assertIn("stall_timeout", inspect.signature(cig.run_agy).parameters)
+
+
+class ContentTypeMismatch(unittest.TestCase):
+    """issue #25 — a .jpg must not silently contain PNG bytes."""
+
+    def test_fmt_from_mime(self):
+        self.assertEqual(cig._fmt_from_mime("image/png"), "png")
+        self.assertEqual(cig._fmt_from_mime("image/jpeg; charset=binary"), "jpeg")
+        self.assertIsNone(cig._fmt_from_mime("application/octet-stream"))
+        self.assertIsNone(cig._fmt_from_mime(None))
+
+    def test_mismatch_warns_naming_both_formats(self):
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            cig._warn_content_type_mismatch(Path("a.jpg"), "jpeg", "image/png")
+        msg = buf.getvalue()
+        self.assertIn("--format=jpeg", msg)
+        self.assertIn("png", msg)
+
+    def test_matching_or_unknown_type_stays_silent(self):
+        for ctype in ("image/jpeg", "application/octet-stream", None):
+            buf = io.StringIO()
+            with redirect_stderr(buf):
+                cig._warn_content_type_mismatch(Path("a.jpg"), "jpeg", ctype)
+            self.assertEqual(buf.getvalue(), "")
+
+    def test_default_out_path_follows_the_sniffed_type(self):
+        src = Path(cig.__file__).read_text()
+        self.assertIn("_default_out_path(args.prompt, _actual_fmt)", src)
 
 
 if __name__ == "__main__":
