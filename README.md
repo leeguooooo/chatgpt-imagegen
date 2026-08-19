@@ -40,6 +40,22 @@ You also need **one backend** — `web` (default, drives your logged-in Chrome, 
 
 Got a **Gemini** subscription too? Two more backends use it instead of OpenAI: `--backend gemini` (drives a logged-in `gemini.google.com` Chrome) and `--backend agy` (the Antigravity CLI, headless). They bill **separate quotas** from each other, so either can cover for the other. Neither is ever chosen automatically — ask by name. Pin the subscribed Chrome profile with `--gemini-profile`, since most profiles are signed in to *some* Google account. Note that Gemini **text-to-image** output carries a visible watermark in the bottom-right corner (image-to-image does not), and `--size` steers the aspect ratio there rather than the exact pixel count.
 
+## Upgrade
+
+```bash
+chatgpt-imagegen update
+```
+
+It runs the `skills` manager for you — directly when `skills` is on PATH, through `npx` when it isn't (it usually isn't). The CLI also nudges you at most once a day when a newer version exists, listing what changed since yours; `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1` turns that off.
+
+**On 0.23.1 or earlier?** That self-update only looked for a global `skills` and gave up when it was missing, so it cannot deliver its own fix. Bootstrap once with:
+
+```bash
+npx -y skills update chatgpt-imagegen
+```
+
+After that `chatgpt-imagegen update` works on its own.
+
 ## Usage
 
 ```bash

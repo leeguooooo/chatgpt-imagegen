@@ -40,6 +40,22 @@ sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
 
 也有 **Gemini** 订阅?还有两个走 Google 账号的后端:`--backend gemini`(驱动登录着 `gemini.google.com` 的 Chrome)和 `--backend agy`(Antigravity CLI,无头)。两者**额度互相独立**,一个用完另一个还能顶上。它们都不会被自动选中,得点名使用。用 `--gemini-profile` 指定有订阅的那个 Chrome profile——因为几乎每个 profile 都登录着*某个* Google 账号,自动探测分不出来。另外注意:Gemini 的**文生图**结果右下角带可见水印(图生图没有);`--size` 在这条路上控制的是画面比例,不是精确像素数。
 
+## 升级
+
+```bash
+chatgpt-imagegen update
+```
+
+它会替你调用 `skills` 管理器——PATH 上有 `skills` 就直接用,没有则走 `npx`(通常都没有)。另外 CLI 每天最多提醒你一次有新版,并列出你那版之后改了什么;`CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1` 可以关掉。
+
+**还停在 0.23.1 或更早?** 那时的自升级只找全局 `skills`,找不到就放弃,所以它没法把这个修复本身装进来。先手动破一次局:
+
+```bash
+npx -y skills update chatgpt-imagegen
+```
+
+之后 `chatgpt-imagegen update` 就能自己跑了。
+
 ## 用法
 
 ```bash
