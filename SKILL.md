@@ -1,6 +1,6 @@
 ---
 name: "chatgpt-imagegen"
-version: "0.23.1"
+version: "0.23.2"
 description: >-
   Generate new raster images and looping GIF/WebP animations with the user's
   ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
@@ -281,12 +281,12 @@ A vague prompt yields a useless figure. Make the prompt describe the figure's **
 **Self-update reminder.** `skills` has no auto-update, so the CLI nudges instead: at most once a day it reads its own `__version__` (plus a terse per-release changelog) from `main` and, if a newer one exists, prints a short stderr notice that **lists what changed** since your version — so you know *why* to update, not just that you can:
 
 ```
-提示:chatgpt-imagegen 0.14.0 可用(当前 0.12.0)。更新:skills update chatgpt-imagegen
+提示:chatgpt-imagegen 0.14.0 可用(当前 0.12.0)。更新:chatgpt-imagegen update
   • 0.14.0:更新提示现在会列出每个新版本改了什么
   • 0.13.0:新增每天一次的新版本提示…
 ```
 
-It never touches stdout, never blocks a run, and is skipped under `--quiet`/`--no-progress`; `doctor` checks unconditionally and prints the same change list. To turn it off entirely, set `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`. When you see the notice, the fix is `skills update chatgpt-imagegen` (or re-run the self-heal `curl`).
+It never touches stdout, never blocks a run, and is skipped under `--quiet`/`--no-progress`; `doctor` checks unconditionally and prints the same change list. To turn it off entirely, set `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`. When you see the notice, the fix is `chatgpt-imagegen update` — it runs the `skills` manager for you, through npx when `skills` isn't on PATH (it usually isn't), so it works without a global install (or re-run the self-heal `curl`).
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |

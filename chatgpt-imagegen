@@ -59,13 +59,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.23.1"
+__version__ = "0.23.2"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.23.2]: `chatgpt-imagegen update` 在没装全局 skills 时改走 npx,不再只甩一句自己也跑不了的命令;文档里的升级指引同步改成 `chatgpt-imagegen update`
 # WHATSNEW[0.23.1]: gemini 后端改走 blob 字节直下,保住 Google 签名的 C2PA 溯源清单(旧的 canvas 重编码会把它连同所有元数据一起丢掉);blob 下载失败时静默回退 canvas,丢溯源好过丢图
 # WHATSNEW[0.23.0]: 参考图可指定角色——新增 --ref-role 与 --style-ref/--composition-ref(借构图不抄主体);agy 后端开始遵守 --stall-timeout(卡死不再干等到总超时);后端返回的格式与 --format 不一致时明确告警,不指定 -o 时按真实类型命名
 # WHATSNEW[0.22.0]: 新增 Gemini 双后端:--backend gemini(驱动登录着的 Gemini 浏览器)与 --backend agy(Antigravity CLI 无头);两者额度实测互相独立,可互为兜底;都不进 auto,需点名使用
@@ -4781,26 +4782,46 @@ docs: https://github.com/leeguooooo/chatgpt-imagegen
 """
 
 
+def _update_runner() -> list[str] | None:
+    """argv that refreshes the install, or None when nothing can run it.
+
+    Delivery is the `skills` manager. A global `skills` on PATH is the happy
+    path, but it is NOT the common one — `skills` is normally invoked as
+    `npx skills ...` and never lands on PATH, so requiring it made `update` a
+    dead end on an otherwise perfectly working machine (it just printed a
+    command the user also could not run). npx runs the same manager with no
+    global install, so it is the fallback rather than a second error message.
+    """
+    skills = shutil.which("skills")
+    if skills:
+        return [skills, "update", "chatgpt-imagegen"]
+    npx = shutil.which("npx")
+    if npx:
+        return [npx, "-y", "skills", "update", "chatgpt-imagegen"]
+    return None
+
+
 def _self_update() -> int:
     """`chatgpt-imagegen update` / `upgrade` — refresh the installed CLI.
 
     Reserving these words as a subcommand fixes a real trap: without it,
     `chatgpt-imagegen upgrade` silently became an image prompt (drawing the word
     "upgrade" and burning quota). Delivery is the `skills` manager (what the
-    daily update reminder points at), so this shells out to
-    `skills update chatgpt-imagegen`; if `skills` isn't on PATH it prints the
-    exact command rather than failing silently. On success it reports the latest
-    known version — noting that the running process stays on the old code until
-    the next invocation (this .py file was just replaced underneath it).
+    daily update reminder points at) — run directly when it is on PATH, else
+    through npx; only when neither exists does this print the command instead
+    of running it. On success it reports the latest known version — noting that
+    the running process stays on the old code until the next invocation (this
+    .py file was just replaced underneath it).
     """
-    skills = shutil.which("skills")
-    if not skills:
-        print("`skills` CLI 不在 PATH 上,无法自动升级。请手动执行:\n"
-              "  skills update chatgpt-imagegen", file=sys.stderr)
+    argv = _update_runner()
+    if argv is None:
+        print("`skills` 和 `npx` 都不在 PATH 上,无法自动升级。"
+              "装上 Node 后执行:\n"
+              "  npx -y skills update chatgpt-imagegen", file=sys.stderr)
         return 1
-    print("升级中:skills update chatgpt-imagegen", file=sys.stderr)
+    print("升级中:" + " ".join(argv), file=sys.stderr)
     try:
-        rc = subprocess.run([skills, "update", "chatgpt-imagegen"]).returncode
+        rc = subprocess.run(argv).returncode
     except OSError as e:
         print(f"error: 无法运行 `skills update`:{e}", file=sys.stderr)
         return 1

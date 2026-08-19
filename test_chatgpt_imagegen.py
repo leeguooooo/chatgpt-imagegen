@@ -206,13 +206,57 @@ class SelfUpdate(unittest.TestCase):
         self.assertEqual(calls,
                          [["/usr/bin/skills", "update", "chatgpt-imagegen"]])
 
-    def test_missing_skills_prints_command_and_fails(self):
+    def test_missing_skills_falls_back_to_npx(self):
+        """`skills` is usually only reachable via npx — that must not be a dead end."""
+        calls = []
+
+        class _Res:
+            returncode = 0
+
+        def fake_which(name):
+            return "/usr/bin/npx" if name == "npx" else None
+
+        def fake_run(argv, *a, **k):
+            calls.append(argv)
+            return _Res()
+
+        with unittest.mock.patch.object(cig.shutil, "which", fake_which), \
+             unittest.mock.patch.object(cig.subprocess, "run", fake_run), \
+             unittest.mock.patch.object(cig, "_fetch_latest_info",
+                                        return_value=(None, {})):
+            rc = cig._self_update()
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            calls,
+            [["/usr/bin/npx", "-y", "skills", "update", "chatgpt-imagegen"]])
+
+    def test_path_skills_wins_over_npx(self):
+        """A real `skills` on PATH is cheaper than spinning up npx."""
+        calls = []
+
+        class _Res:
+            returncode = 0
+
+        def fake_run(argv, *a, **k):
+            calls.append(argv)
+            return _Res()
+
+        with unittest.mock.patch.object(cig.shutil, "which",
+                                        lambda name: f"/usr/bin/{name}"), \
+             unittest.mock.patch.object(cig.subprocess, "run", fake_run), \
+             unittest.mock.patch.object(cig, "_fetch_latest_info",
+                                        return_value=(None, {})):
+            cig._self_update()
+        self.assertEqual(calls,
+                         [["/usr/bin/skills", "update", "chatgpt-imagegen"]])
+
+    def test_no_runner_at_all_prints_command_and_fails(self):
         with unittest.mock.patch.object(cig.shutil, "which", return_value=None):
             buf = io.StringIO()
             with redirect_stderr(buf):
                 rc = cig._self_update()
         self.assertEqual(rc, 1)
-        self.assertIn("skills update chatgpt-imagegen", buf.getvalue())
+        self.assertIn("npx -y skills update chatgpt-imagegen", buf.getvalue())
 
     def test_propagates_nonzero_exit(self):
         class _Res:
