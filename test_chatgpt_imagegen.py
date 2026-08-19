@@ -2162,5 +2162,67 @@ class GeminiBlobDownload(unittest.TestCase):
         self.assertIn('if meta.get("provenance") == "stripped":', src)
 
 
+class StallTimeoutZero(unittest.TestCase):
+    """issue #30 — the stall message told users to pass 0, argparse refused it."""
+
+    def test_non_negative_int_accepts_zero_and_rejects_negatives(self):
+        self.assertEqual(cig._non_negative_int("0"), 0)
+        self.assertEqual(cig._non_negative_int("7"), 7)
+        for bad in ("-1", "abc", ""):
+            with self.assertRaises(argparse.ArgumentTypeError):
+                cig._non_negative_int(bad)
+
+    def test_positive_int_still_rejects_zero(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            cig._positive_int("0")
+
+    def test_the_stall_timeout_flag_uses_the_permissive_validator(self):
+        src = Path(cig.__file__).read_text()
+        self.assertIn('"--stall-timeout",\n        type=_non_negative_int,', src)
+        # --timeout must stay strictly positive: 0 there means "give up at once".
+        self.assertIn('"--timeout",\n        type=_positive_int,', src)
+
+    def test_zero_survives_the_clamp_against_total_timeout(self):
+        src = Path(cig.__file__).read_text()
+        self.assertIn("0.0 if args.stall_timeout <= 0", src)
+
+    def test_zero_disables_the_agy_idle_kill(self):
+        # A child silent for longer than the old default must still finish.
+        rc, out, _err = cig._run_agy_watched(
+            [sys.executable, "-c", "import time; time.sleep(1); print('done')"],
+            tempfile.gettempdir(), total_timeout=20.0, stall_timeout=0.0)
+        self.assertEqual((rc, out.strip()), (0, "done"))
+
+    def _stream_read_timeout(self, stall_timeout: float) -> float:
+        seen = {}
+
+        class FakeResp:
+            def __iter__(self):
+                return iter([b"data: [DONE]\n", b"\n"])
+
+            def close(self):
+                pass
+
+        with unittest.mock.patch.object(cig.urllib.request, "urlopen",
+                                        lambda *a, **kw: FakeResp()), \
+             unittest.mock.patch.object(
+                 cig, "_loosen_read_timeout",
+                 lambda resp, t: seen.__setitem__("t", t)):
+            list(cig._stream("https://x", {}, {},
+                             time.monotonic() + 300.0, stall_timeout))
+        return seen["t"]
+
+    def test_zero_falls_back_to_the_remaining_budget_not_a_zero_socket(self):
+        # A 0 socket timeout means non-blocking: every read would fail at once.
+        self.assertGreater(self._stream_read_timeout(0.0), 200.0)
+
+    def test_a_positive_stall_timeout_still_bounds_the_read(self):
+        self.assertAlmostEqual(self._stream_read_timeout(12.0), 12.0, places=3)
+
+    def test_the_agy_stall_message_still_advertises_zero(self):
+        src = Path(cig.__file__).read_text()
+        self.assertIn("drop it to 0 to wait out the", src)
+
+
 if __name__ == "__main__":
     unittest.main()

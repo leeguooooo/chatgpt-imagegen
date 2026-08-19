@@ -59,13 +59,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.23.2"
+__version__ = "0.23.3"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.23.3]: --stall-timeout 0 不再被 argparse 拒绝——卡死提示里教你用的 0 现在真能用,表示关掉静默检测、等满 --timeout;负数仍然报错
 # WHATSNEW[0.23.2]: `chatgpt-imagegen update` 在没装全局 skills 时改走 npx,不再只甩一句自己也跑不了的命令;文档里的升级指引同步改成 `chatgpt-imagegen update`
 # WHATSNEW[0.23.1]: gemini 后端改走 blob 字节直下,保住 Google 签名的 C2PA 溯源清单(旧的 canvas 重编码会把它连同所有元数据一起丢掉);blob 下载失败时静默回退 canvas,丢溯源好过丢图
 # WHATSNEW[0.23.0]: 参考图可指定角色——新增 --ref-role 与 --style-ref/--composition-ref(借构图不抄主体);agy 后端开始遵守 --stall-timeout(卡死不再干等到总超时);后端返回的格式与 --format 不一致时明确告警,不指定 -o 时按真实类型命名
@@ -105,7 +106,8 @@ ANIMATION_DEFAULT_MAX_DRIFT = 8.0
 # treated as stalled. The connect timeout urllib applies to urlopen() also
 # governs every subsequent read, so without loosening it a >connect-timeout
 # pause mid-stream (common while a detailed image renders) kills a live stream.
-# Overridable via --stall-timeout; always clamped to the total --timeout.
+# Overridable via --stall-timeout; clamped to the total --timeout, and 0
+# disables stall detection entirely (wait out the full --timeout).
 # Measured: a real "generating" phase can stay silent ~66s before the first
 # partial image, so 120s leaves margin against false stalls on the slowest
 # images while still catching a genuine hang well inside the total budget.
@@ -780,7 +782,12 @@ def _stream(
     # by stall_timeout (and never beyond the remaining budget). A read that
     # blocks longer than this raises TimeoutError, which the caller turns into a
     # clean "stalled" message.
-    _loosen_read_timeout(resp, min(stall_timeout, max(1.0, deadline - time.monotonic())))
+    # `--stall-timeout 0` means "no idle deadline": fall back to the remaining
+    # wall-clock budget, never 0 — a 0 timeout puts the socket in non-blocking
+    # mode and every read would fail instantly (issue #30).
+    _remaining = max(1.0, deadline - time.monotonic())
+    _loosen_read_timeout(
+        resp, min(stall_timeout, _remaining) if stall_timeout > 0 else _remaining)
     try:
         data_buf: list[str] = []
         for raw in resp:
@@ -906,7 +913,8 @@ def _post_for_image(
         raise GatewayError(
             f"stalled: the image backend sent no data for ~{int(stall_timeout)}s "
             f"(last phase: {last_phase}, {elapsed:.0f}s elapsed). It may be "
-            f"overloaded — retry, or raise --stall-timeout / --timeout."
+            f"overloaded — retry, raise --stall-timeout (or set it to 0 to "
+            f"wait out the full --timeout), or raise --timeout."
         ) from None
     except urllib.error.URLError as e:
         raise GatewayError(f"network error contacting the image backend: {e.reason}") from None
@@ -2788,6 +2796,24 @@ def _positive_int(value: str) -> int:
         raise argparse.ArgumentTypeError(f"must be a positive integer: {value!r}")
     if v <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive integer: {value!r}")
+    return v
+
+
+def _non_negative_int(value: str) -> int:
+    """Like `_positive_int`, but 0 is a legal value meaning "disabled".
+
+    `--stall-timeout` needs this: its own stall message tells the user to drop
+    the timeout to 0 to wait out the full --timeout, and argparse used to
+    reject exactly that advice (issue #30).
+    """
+    try:
+        v = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"must be 0 or a positive integer: {value!r}")
+    if v < 0:
+        raise argparse.ArgumentTypeError(
+            f"must be 0 or a positive integer: {value!r}")
     return v
 
 
@@ -5059,11 +5085,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--stall-timeout",
-        type=_positive_int,
+        type=_non_negative_int,
         default=int(DEFAULT_STALL_TIMEOUT),
-        help=f"Max seconds of silence (no SSE data) before the request is "
-             f"declared stalled (default: {int(DEFAULT_STALL_TIMEOUT)}). "
-             f"Clamped to --timeout.",
+        help=f"Max seconds of silence (no SSE data / no agy output) before the "
+             f"request is declared stalled (default: "
+             f"{int(DEFAULT_STALL_TIMEOUT)}). Clamped to --timeout; 0 disables "
+             f"stall detection and waits out the full --timeout.",
     )
     parser.add_argument(
         "--quiet",
@@ -5138,7 +5165,9 @@ def main() -> int:
     args.n_composition_refs = sum(
         1 for r in _kept_refs if r["group"] == "composition")
 
-    stall_timeout = float(min(args.stall_timeout, args.timeout))
+    # 0 means "no stall detection"; anything else is clamped to the total budget.
+    stall_timeout = (0.0 if args.stall_timeout <= 0
+                     else float(min(args.stall_timeout, args.timeout)))
     start = time.monotonic()
 
     # Over-cap drops are a data-affecting event, not progress chatter: the spec
