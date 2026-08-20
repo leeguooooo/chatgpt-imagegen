@@ -2055,12 +2055,29 @@ class AgyStallTimeout(unittest.TestCase):
 
     def test_silent_child_is_killed_at_the_idle_deadline(self):
         t0 = time.monotonic()
-        with self.assertRaises(cig.GatewayError) as ctx:
-            cig._run_agy_watched(
-                [sys.executable, "-c", "import time; time.sleep(30)"],
-                tempfile.gettempdir(), total_timeout=30.0, stall_timeout=0.6)
+        # Shrink the startup grace too, or the never-speaks child would sit out
+        # the full grace window and make the suite that much slower.
+        with unittest.mock.patch.object(cig, "_AGY_STARTUP_GRACE", 0.6):
+            with self.assertRaises(cig.GatewayError) as ctx:
+                cig._run_agy_watched(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    tempfile.gettempdir(), total_timeout=30.0, stall_timeout=0.6)
         self.assertLess(time.monotonic() - t0, 10.0)
         self.assertIn("stalled", str(ctx.exception))
+
+    def test_a_slow_boot_is_not_mistaken_for_a_stall(self):
+        # agy is silent while it boots. Timing that silence from Popen() rather
+        # than from the first chunk killed healthy runs under a short
+        # --stall-timeout — and made the chatty test below flaky whenever the
+        # interpreter took longer than the window just to start.
+        rc, out, _err = cig._run_agy_watched(
+            [sys.executable, "-c",
+             "import time; time.sleep(1.2); print('late', flush=True)"],
+            tempfile.gettempdir(), total_timeout=30.0, stall_timeout=0.3)
+        self.assertEqual((rc, out.strip()), (0, "late"))
+
+    def test_the_startup_grace_is_a_positive_default(self):
+        self.assertGreaterEqual(cig._AGY_STARTUP_GRACE, 1.0)
 
     def test_chatty_child_survives_a_shorter_stall_window(self):
         rc, out, _err = cig._run_agy_watched(

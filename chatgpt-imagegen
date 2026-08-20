@@ -59,13 +59,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.23.3"
+__version__ = "0.23.4"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.23.4]: agy 后端不再把启动耗时当成卡死——首行输出前有 5 秒宽限,短 --stall-timeout 不会再误杀刚开机的 agy;卡死提示改报真实静默秒数,不再显示 "~0s"
 # WHATSNEW[0.23.3]: --stall-timeout 0 不再被 argparse 拒绝——卡死提示里教你用的 0 现在真能用,表示关掉静默检测、等满 --timeout;负数仍然报错
 # WHATSNEW[0.23.2]: `chatgpt-imagegen update` 在没装全局 skills 时改走 npx,不再只甩一句自己也跑不了的命令;文档里的升级指引同步改成 `chatgpt-imagegen update`
 # WHATSNEW[0.23.1]: gemini 后端改走 blob 字节直下,保住 Google 签名的 C2PA 溯源清单(旧的 canvas 重编码会把它连同所有元数据一起丢掉);blob 下载失败时静默回退 canvas,丢溯源好过丢图
@@ -112,6 +113,12 @@ ANIMATION_DEFAULT_MAX_DRIFT = 8.0
 # partial image, so 120s leaves margin against false stalls on the slowest
 # images while still catching a genuine hang well inside the total budget.
 DEFAULT_STALL_TIMEOUT = 120.0
+# A freshly exec'd CLI is silent while it boots: agy spends the first few
+# seconds on process start, auth and config before its first line reaches us.
+# Counting that boot as idle time kills healthy runs whenever --stall-timeout
+# is short, so the *first* chunk gets at least this much grace; once output
+# starts flowing the --stall-timeout contract applies verbatim.
+_AGY_STARTUP_GRACE = 5.0
 DEFAULT_TOTAL_TIMEOUT = 300  # large images occasionally take 2-3 minutes
 OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"  # Codex CLI's published client id
@@ -2619,16 +2626,20 @@ def _run_agy_watched(
     wedged agy stayed alive for the full --timeout no matter what
     --stall-timeout said (issue #24). Draining both pipes on reader threads and
     stamping the time of every chunk gives agy the same idle contract the codex
-    and web backends already honour. Returns (returncode, stdout, stderr).
+    and web backends already honour. The wait for the *first* chunk gets
+    `_AGY_STARTUP_GRACE` of slack so agy's own boot isn't read as a stall.
+    Returns (returncode, stdout, stderr).
     """
     proc = subprocess.Popen(cmd, cwd=cwd, text=True,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     chunks: dict[str, list[str]] = {"out": [], "err": []}
     last = [time.monotonic()]
+    started = [False]
 
     def drain(stream, key: str) -> None:
         for line in iter(stream.readline, ""):
             last[0] = time.monotonic()
+            started[0] = True
             chunks[key].append(line)
         stream.close()
 
@@ -2645,19 +2656,22 @@ def _run_agy_watched(
         now = time.monotonic()
         if now >= deadline:
             break
-        if stall_timeout > 0 and now - last[0] >= stall_timeout:
+        idle_budget = (stall_timeout if started[0]
+                       else max(stall_timeout, _AGY_STARTUP_GRACE))
+        if stall_timeout > 0 and now - last[0] >= idle_budget:
             stalled = True
             break
         time.sleep(0.2)
 
     if proc.poll() is None:
+        idle = time.monotonic() - last[0]
         proc.kill()
         proc.wait()
         for t in threads:
             t.join(timeout=1.0)
         if stalled:
             raise GatewayError(
-                f"agy stalled: no output for ~{int(stall_timeout)}s "
+                f"agy stalled: no output for ~{round(idle)}s "
                 f"(raise --stall-timeout, or drop it to 0 to wait out the "
                 f"full --timeout)")
         raise subprocess.TimeoutExpired(cmd, total_timeout)
