@@ -35,7 +35,10 @@ from __future__ import annotations
 
 import argparse
 import base64
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows has no fcntl; the cross-process flock gate
+    fcntl = None      # degrades to a no-op there (see _concurrency_slot).
 import hashlib
 import http.server
 import json
@@ -1624,7 +1627,10 @@ def _concurrency_slot(kind: str, limit: int, progress: bool, start: float) -> "I
     kernel releases a slot when its holder dies, so a crash can't wedge the
     queue. ``limit <= 0`` disables the gate entirely.
     """
-    if limit <= 0:
+    if limit <= 0 or fcntl is None:
+        # No POSIX flock on this platform (e.g. Windows): skip the
+        # cross-process gate rather than crash. Single manual runs are
+        # unaffected; concurrent-fanout callers should self-limit there.
         yield
         return
     base = tempfile.gettempdir()
