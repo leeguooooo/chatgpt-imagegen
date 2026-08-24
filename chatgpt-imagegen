@@ -342,8 +342,10 @@ def _refresh_access_token(refresh_token: str, timeout: int = 30) -> JsonDict:
 def _persist_refreshed_auth(original: JsonDict, refreshed: JsonDict) -> None:
     """Atomically rewrite ~/.codex/auth.json with the refreshed tokens.
 
-    Writes a temp file in the same directory with mode 0600, fsyncs it, then
-    os.replace()s it over the original. Survives crashes / disk-full midwrite.
+    Writes a temp file in the same directory, applies mode 0600 where POSIX
+    ``fchmod`` is available, fsyncs it, then os.replace()s it over the
+    original. Windows inherits the containing directory's ACL. Survives
+    crashes / disk-full midwrite.
     """
     tokens = original.get("tokens")
     if not isinstance(tokens, dict):
@@ -362,7 +364,9 @@ def _persist_refreshed_auth(original: JsonDict, refreshed: JsonDict) -> None:
     fd, tmp_path = tempfile.mkstemp(prefix=".auth.", suffix=".tmp", dir=str(AUTH_PATH.parent))
     tmp_file = Path(tmp_path)
     try:
-        os.fchmod(fd, 0o600)
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is not None:
+            fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as fh:
             fh.write(serialized)
             fh.flush()
@@ -2652,11 +2656,18 @@ def _agy_extract_path(stdout: str) -> str | None:
         # Strip a markdown link wrapper — agy sometimes answers with
         # `[teapot.png](file:///abs/path)` rather than a bare path. Excluding
         # `)` from the path is what keeps the link's closing paren out of it.
-        m = re.search(r"file://(/[^\s)>\]\"']+)", line)
+        m = re.search(r"file://([^\s)>\]\"']+)", line)
         if m:
-            return m.group(1)
+            cand = urllib.parse.unquote(m.group(1))
+            # file:///C:/path is the canonical Windows form; some tools emit
+            # file://C:\\path instead. Path accepts either after dropping the
+            # URI-only leading slash from a drive-letter path.
+            if re.match(r"^/[A-Za-z]:[\\/]", cand):
+                cand = cand[1:]
+            if Path(cand).is_file():
+                return cand
         cand = line.strip("`'\" ")
-        if cand.startswith("/") and Path(cand).is_file():
+        if Path(cand).is_absolute() and Path(cand).is_file():
             return cand
     return None
 

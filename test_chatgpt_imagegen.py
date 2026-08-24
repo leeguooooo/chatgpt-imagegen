@@ -175,7 +175,7 @@ class UpdateNotify(unittest.TestCase):
         # Both __version__ and the newest WHATSNEW line must sit in the first 8KB,
         # since the reminder only reads that prefix of the remote script.
         head = Path(os.path.join(os.path.dirname(__file__),
-                                 "chatgpt-imagegen")).read_text()[:8192]
+                                 "chatgpt-imagegen")).read_text(encoding="utf-8")[:8192]
         m = re.search(r'__version__\s*=\s*"([\d.]+)"', head)
         self.assertEqual(m.group(1), cig.__version__)
         notes = cig._parse_whatsnew(head)
@@ -595,6 +595,21 @@ class ExtractAccessToken(unittest.TestCase):
     def test_missing(self):
         access, _account, _refresh = cig._extract_access_token({})
         self.assertIsNone(access)
+
+
+class RefreshedAuthPersistence(unittest.TestCase):
+    def test_persists_when_posix_fchmod_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as td, \
+             unittest.mock.patch.object(cig, "AUTH_PATH", Path(td) / "auth.json"), \
+             unittest.mock.patch.object(cig.os, "fchmod", None, create=True):
+            original = {"tokens": {"access_token": "old"}}
+            cig._persist_refreshed_auth(
+                original,
+                {"access_token": "new", "refresh_token": "refresh"},
+            )
+            saved = json.loads(cig.AUTH_PATH.read_text(encoding="utf-8"))
+        self.assertEqual(saved["tokens"]["access_token"], "new")
+        self.assertEqual(saved["tokens"]["refresh_token"], "refresh")
 
 
 class DownloadRefCap(unittest.TestCase):
@@ -1529,7 +1544,8 @@ class OidcPkce(unittest.TestCase):
             cig._save_platform_auth({"access_token": "at", "refresh_token": "rt",
                                      "expires_at": 9999999999})
             p = cig._platform_auth_path()
-            self.assertEqual(p.stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":
+                self.assertEqual(p.stat().st_mode & 0o777, 0o600)
             self.assertEqual(cig._load_platform_auth()["access_token"], "at")
 
     def test_expired_token_triggers_refresh(self):
@@ -1976,7 +1992,7 @@ class GeminiBackendsAreOptIn(unittest.TestCase):
                           ("web", "codex", "neither"))
 
     def test_both_backends_are_selectable_by_name(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertIn('"auto", "web", "codex", "gemini", "agy"', src)
 
 
@@ -2125,7 +2141,7 @@ class ContentTypeMismatch(unittest.TestCase):
             self.assertEqual(buf.getvalue(), "")
 
     def test_default_out_path_follows_the_sniffed_type(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertIn("_default_out_path(args.prompt, _actual_fmt)", src)
 
 
@@ -2173,7 +2189,7 @@ class GeminiBlobDownload(unittest.TestCase):
                 lambda: 30.0))
 
     def test_canvas_path_still_labels_itself_as_provenance_stripped(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertIn('"transport": "canvas", "provenance": "stripped"', src)
         # The C2PA warning must not fire on the byte-exact path.
         self.assertIn('if meta.get("provenance") == "stripped":', src)
@@ -2194,13 +2210,13 @@ class StallTimeoutZero(unittest.TestCase):
             cig._positive_int("0")
 
     def test_the_stall_timeout_flag_uses_the_permissive_validator(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertIn('"--stall-timeout",\n        type=_non_negative_int,', src)
         # --timeout must stay strictly positive: 0 there means "give up at once".
         self.assertIn('"--timeout",\n        type=_positive_int,', src)
 
     def test_zero_survives_the_clamp_against_total_timeout(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertIn("0.0 if args.stall_timeout <= 0", src)
 
     def test_zero_disables_the_agy_idle_kill(self):
@@ -2237,7 +2253,7 @@ class StallTimeoutZero(unittest.TestCase):
         self.assertAlmostEqual(self._stream_read_timeout(12.0), 12.0, places=3)
 
     def test_the_agy_stall_message_still_advertises_zero(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertIn("drop it to 0 to wait out the", src)
 
 
@@ -2251,7 +2267,7 @@ class ConcurrencySlot(unittest.TestCase):
     """
 
     def test_the_posix_import_is_optional(self):
-        src = Path(cig.__file__).read_text()
+        src = Path(cig.__file__).read_text(encoding="utf-8")
         self.assertNotIn("\nimport fcntl\n", src)   # bare import would crash
         self.assertIn("except ImportError:", src)
 
@@ -2299,8 +2315,8 @@ class ConcurrencySlot(unittest.TestCase):
         fake_msvcrt = unittest.mock.Mock(LK_NBLCK=1, LK_UNLCK=0)
         fake_msvcrt.locking.side_effect = lambda fd, mode, n: calls.append(
             (mode, n, handle.tell()))
-        with tempfile.NamedTemporaryFile(suffix=".lock") as tf:
-            handle = open(tf.name, "a+")
+        with tempfile.TemporaryDirectory() as td:
+            handle = open(Path(td) / "slot.lock", "a+")
             handle.write("padding")     # a non-zero offset to be corrected
             with unittest.mock.patch.object(cig, "fcntl", None), \
                  unittest.mock.patch.object(cig, "msvcrt", fake_msvcrt):
@@ -2312,8 +2328,8 @@ class ConcurrencySlot(unittest.TestCase):
     def test_the_windows_path_reports_contention_as_false(self):
         fake_msvcrt = unittest.mock.Mock(LK_NBLCK=1, LK_UNLCK=0)
         fake_msvcrt.locking.side_effect = OSError(36, "already locked")
-        with tempfile.NamedTemporaryFile(suffix=".lock") as tf:
-            handle = open(tf.name, "a+")
+        with tempfile.TemporaryDirectory() as td:
+            handle = open(Path(td) / "slot.lock", "a+")
             with unittest.mock.patch.object(cig, "fcntl", None), \
                  unittest.mock.patch.object(cig, "msvcrt", fake_msvcrt):
                 self.assertFalse(cig._try_lock(handle))
