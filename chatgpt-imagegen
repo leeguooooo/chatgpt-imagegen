@@ -73,7 +73,7 @@ __version__ = "0.23.6"
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
-# WHATSNEW[0.23.6]: Windows 认证持久化与路径测试可跨平台运行(#32);main 上版本变化且 CI 通过后自动创建 GitHub Release;交互式运行每天检查到新版时自动升级,失败则保留手动升级提示
+# WHATSNEW[0.23.6]: Windows 认证持久化与路径测试可跨平台运行(#32);main 上版本变化且 CI 通过后自动创建 GitHub Release;交互式运行每天检查到新版时自动升级,失败则保留手动升级提示;chatgpt.com 改为全机器单窗口——与 chatgpt-use 共用 ~/.chatgpt-web.lock 把整轮生成串起来,并共用 chrome-use 会话名 chatgpt-web,避免多开标签页触发限流、互相串图
 # WHATSNEW[0.23.5]: Windows 上不再一启动就崩——fcntl 改为可选导入,并用 msvcrt 字节锁顶上,并发闸门在 Windows 上依旧生效,不会退化成不限并发
 # WHATSNEW[0.23.4]: agy 后端不再把启动耗时当成卡死——首行输出前有 5 秒宽限,短 --stall-timeout 不会再误杀刚开机的 agy;卡死提示改报真实静默秒数,不再显示 "~0s"
 # WHATSNEW[0.23.3]: --stall-timeout 0 不再被 argparse 拒绝——卡死提示里教你用的 0 现在真能用,表示关掉静默检测、等满 --timeout;负数仍然报错
@@ -1709,6 +1709,102 @@ def _concurrency_slot(kind: str, limit: int, progress: bool, start: float) -> "I
             slot.close()
 
 
+# ---------------------------------------------------------------------------
+# Cross-TOOL serialization for the chatgpt.com page surface
+#
+# The gate above only serializes *this* program against itself. It does not see
+# other tools driving the same account: chatgpt-use (leeguooooo/chatgpt-use)
+# held its own lock at ~/.chatgpt-use/channel.lock, so the two projects could
+# drive chatgpt.com simultaneously with neither noticing. That produces exactly
+# the damage each project had already fixed internally — two processes typing
+# into one composer concatenate their prompts (chatgpt-use proved this live:
+# "42 non-whitespace chars present, 21 expected"), and a second tab makes the
+# "Image created" toast leak a sibling conversation's image into this run
+# (issue #7).
+#
+# So the lock has to be owned by the SURFACE, not by either project. Both
+# projects now take this one path, agreed with chatgpt-use:
+#   * ~/.chatgpt-web.lock — neither tool's namespace, so neither owns it.
+#   * held for a WHOLE generation, never per HTTP call. A half-held lock is
+#     worse than none because it still looks safe.
+#   * advisory flock (std::fs::File::lock on their side, fcntl/msvcrt here), so
+#     the kernel releases it if a holder dies and the two languages interop.
+#   * an unopenable lock file warns and proceeds rather than refusing to work —
+#     losing serialization is bad, but refusing to generate is worse.
+CHATGPT_WEB_LOCK = ".chatgpt-web.lock"
+
+# The one chrome-use session name both projects drive, so there is exactly one
+# chatgpt.com tab on the machine instead of one per tool per pid. Stable on
+# purpose: a pid-suffixed name defeats reuse and is how a dozen tabs get opened
+# in an afternoon.
+CHATGPT_WEB_SESSION = "chatgpt-web"
+
+# Whether this process actually holds CHATGPT_WEB_LOCK. False means the lock
+# was unavailable as a primitive (no flock on this platform, or the file could
+# not be opened) — NOT that it is merely uncontended. Read by the session-name
+# choice below: without real serialization, sharing one tab is unsafe.
+_chatgpt_web_lock_held = False
+
+
+def _chatgpt_web_lock_path() -> Path:
+    """Where the shared lock lives. Overridable for tests via
+    CHATGPT_IMAGEGEN_WEB_LOCK (an absolute path); otherwise ~/.chatgpt-web.lock.
+    """
+    override = os.environ.get("CHATGPT_IMAGEGEN_WEB_LOCK", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / CHATGPT_WEB_LOCK
+
+
+@contextmanager
+def _chatgpt_web_turn(progress: bool, start: float) -> "Iterator[None]":
+    """Hold the cross-tool chatgpt.com lock for one whole generation.
+
+    Blocks (0.5s poll) while another process — this tool or chatgpt-use — is
+    mid-turn, announcing the wait once on stderr so a stall is explainable
+    rather than looking like a hang.
+    """
+    global _chatgpt_web_lock_held
+    if not _HAVE_FILE_LOCK:
+        # No locking primitive at all. Say so once: the user is running two
+        # tools against one account with no gate, and should know.
+        print("warning: no file-locking primitive on this platform — cannot "
+              "serialize against other chatgpt.com tools (chatgpt-use). Run "
+              "one at a time.", file=sys.stderr)
+        yield
+        return
+    path = _chatgpt_web_lock_path()
+    try:
+        # "a+" not "w": truncating a file another process byte-range-locked is
+        # a sharing violation on Windows.
+        f = open(path, "a+")
+    except OSError as e:
+        print(f"warning: cannot open {path} ({e}) — proceeding without "
+              f"cross-tool chatgpt.com serialization.", file=sys.stderr)
+        yield
+        return
+    announced = False
+    try:
+        while not _try_lock(f):
+            if progress and not announced:
+                announced = True
+                print(
+                    _fmt_progress(
+                        time.monotonic() - start,
+                        "waiting for another chatgpt turn to finish "
+                        "(chatgpt.com allows one at a time)",
+                    ),
+                    file=sys.stderr,
+                )
+            time.sleep(0.5)
+        _chatgpt_web_lock_held = True
+        yield
+    finally:
+        _chatgpt_web_lock_held = False
+        _unlock(f)
+        f.close()
+
+
 def run_web(
     args: argparse.Namespace, progress: bool, start: float,
     refs: list[str] | None = None,
@@ -1724,16 +1820,24 @@ def run_web(
     ab = _find_agent_browser()
     if ab is None:
         raise WebUnavailable(f"`chrome-use` is not installed — {_AB_INSTALL_HINT}")
-    # Default to a STABLE session name so we reuse one chrome-use daemon instead
-    # of leaking a fresh `imagegen-<pid>` daemon every run (chrome-use has no
-    # clean daemon-reap command yet — see leeguooooo/chrome-use#48). Safe because
-    # web runs are serialized to 1 by the concurrency gate; only if the user
-    # lifts that cap do we fall back to a per-pid session so parallel runs don't
-    # share — and cross-contaminate (issue #7) — the same tab.
+    # Default to the STABLE, CROSS-TOOL session name so the whole machine shares
+    # one chatgpt.com tab — this process, a second copy of it, and chatgpt-use
+    # all drive `chatgpt-web`. That reuses one chrome-use daemon instead of
+    # leaking a fresh one per run (chrome-use has no clean daemon-reap command
+    # yet — see leeguooooo/chrome-use#48), and it is what keeps the account from
+    # being rate-limited by a pile of tabs.
+    #
+    # Sharing a tab is only safe while turns are actually serialized. The
+    # cross-tool lock (_chatgpt_web_turn) normally guarantees that regardless of
+    # the concurrency cap, so the stable name is the default even when the user
+    # lifts the cap. But if that lock is not really held — no flock primitive,
+    # or an unopenable lock file — then parallel runs could share one tab and
+    # cross-contaminate (issue #7), so fall back to a per-pid session and accept
+    # the extra tab as the lesser evil.
     if args.session:
         session = args.session
-    elif _backend_limit("web", WEB_CONCURRENCY_DEFAULT) == 1:
-        session = "imagegen"
+    elif _chatgpt_web_lock_held or _backend_limit("web", WEB_CONCURRENCY_DEFAULT) == 1:
+        session = CHATGPT_WEB_SESSION
     else:
         session = f"imagegen-{os.getpid()}"
     # Budget the generation from NOW, not from process start: web runs may have
@@ -3322,15 +3426,19 @@ def _dispatch(
 
     if args.backend == "web":
         try:
-            with _concurrency_slot("web", web_limit, progress, start):
-                return run_web(args, progress, start, refs=refs)
+            # Outer: the cross-tool chatgpt.com lock, so chatgpt-use and a second
+            # copy of this tool queue behind us for the WHOLE generation.
+            with _chatgpt_web_turn(progress, start):
+                with _concurrency_slot("web", web_limit, progress, start):
+                    return run_web(args, progress, start, refs=refs)
         except GatewayError as e:
             sys.exit(str(e))
 
     # auto
     try:
-        with _concurrency_slot("web", web_limit, progress, start):
-            return run_web(args, progress, start, refs=refs)
+        with _chatgpt_web_turn(progress, start):
+            with _concurrency_slot("web", web_limit, progress, start):
+                return run_web(args, progress, start, refs=refs)
     except WebUnavailable as e:
         if _codex_token_present():
             if _find_agent_browser() is None:
