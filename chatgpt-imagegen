@@ -1827,13 +1827,20 @@ def run_web(
     # yet — see leeguooooo/chrome-use#48), and it is what keeps the account from
     # being rate-limited by a pile of tabs.
     #
-    # Sharing a tab is only safe while turns are actually serialized. The
-    # cross-tool lock (_chatgpt_web_turn) normally guarantees that regardless of
-    # the concurrency cap, so the stable name is the default even when the user
-    # lifts the cap. But if that lock is not really held — no flock primitive,
-    # or an unopenable lock file — then parallel runs could share one tab and
-    # cross-contaminate (issue #7), so fall back to a per-pid session and accept
-    # the extra tab as the lesser evil.
+    # Sharing a tab is only safe while turns are actually serialized, and the
+    # cross-tool lock (_chatgpt_web_turn) is what guarantees that — so the stable
+    # name applies whenever the lock is genuinely held, even if the user lifted
+    # the per-process concurrency cap.
+    #
+    # The two degraded cases are split deliberately, and neither is free:
+    #   * cap lifted AND no real lock → parallel runs really can overlap, so
+    #     fall back to a per-pid session and accept an extra tab as the lesser
+    #     evil against cross-contamination (issue #7).
+    #   * cap at 1 but no real lock (no flock primitive, or an unopenable lock
+    #     file) → KNOWINGLY keep the shared name. Nothing we do to the session
+    #     name would restore serialization here, and one tab is the explicit
+    #     requirement; _chatgpt_web_turn has already warned on stderr that the
+    #     user must run one tool at a time.
     if args.session:
         session = args.session
     elif _chatgpt_web_lock_held or _backend_limit("web", WEB_CONCURRENCY_DEFAULT) == 1:
