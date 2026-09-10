@@ -1775,9 +1775,14 @@ def _chatgpt_web_turn(progress: bool, start: float) -> "Iterator[None]":
         return
     path = _chatgpt_web_lock_path()
     try:
-        # "a+" not "w": truncating a file another process byte-range-locked is
-        # a sharing violation on Windows.
-        f = open(path, "a+")
+        # O_RDWR|O_CREAT, deliberately NOT "a+" and NOT "w":
+        #   * no O_TRUNC — truncating a file another process has byte-range
+        #     locked is a sharing violation on Windows;
+        #   * no O_APPEND — append mode forces every write to end-of-file and
+        #     silently ignores seek(0), which would append our holder name after
+        #     a previous holder's line instead of replacing it, so readers would
+        #     report a stale holder.
+        f = os.fdopen(os.open(path, os.O_RDWR | os.O_CREAT, 0o644), "r+")
     except OSError as e:
         print(f"warning: cannot open {path} ({e}) — proceeding without "
               f"cross-tool chatgpt.com serialization.", file=sys.stderr)
@@ -1788,21 +1793,59 @@ def _chatgpt_web_turn(progress: bool, start: float) -> "Iterator[None]":
         while not _try_lock(f):
             if progress and not announced:
                 announced = True
+                # Name the holder. A 90s image generation behind another tool's
+                # turn is the difference between "queued" and "hung" for whoever
+                # is watching stderr.
                 print(
                     _fmt_progress(
                         time.monotonic() - start,
-                        "waiting for another chatgpt turn to finish "
-                        "(chatgpt.com allows one at a time)",
+                        f"waiting for {_chatgpt_web_holder(f)} to finish its "
+                        f"chatgpt turn (chatgpt.com allows one at a time)",
                     ),
                     file=sys.stderr,
                 )
             time.sleep(0.5)
+        # Record who holds it, for the other side's waiter line. Best-effort:
+        # failing to write our name is not a reason to abandon a lock we hold.
+        # Deliberately NOT truncated first — truncating a file whose byte range
+        # is locked is a sharing violation on Windows (same trap as the slot
+        # files above). Our line ends in \n, so any longer remnant from a
+        # previous holder lands on line 2, which the reader ignores.
+        try:
+            f.seek(0)
+            f.write(f"chatgpt-imagegen {os.getpid()}\n")
+            f.flush()
+        except OSError:
+            pass
         _chatgpt_web_lock_held = True
         yield
     finally:
         _chatgpt_web_lock_held = False
         _unlock(f)
         f.close()
+
+
+def _chatgpt_web_holder(f) -> str:
+    """Describe whoever currently holds the lock, for a waiter message.
+
+    The file contains `<tool> <pid>`, written by whichever side took it. Agreed
+    with chatgpt-use that an empty or unparsable file means "unknown holder" and
+    is NOT an error — the warn-and-proceed paths leave the file empty on purpose,
+    and an old holder may predate this convention.
+    """
+    try:
+        f.seek(0)
+        line = f.read(200).strip().splitlines()[0].strip()
+    except (OSError, IndexError):
+        return "another chatgpt tool"
+    if not line:
+        return "another chatgpt tool"
+    parts = line.split()
+    # Accept a bare tool name too; only the first field is load-bearing.
+    tool = parts[0]
+    if len(parts) > 1 and parts[1].isdigit():
+        return f"{tool} (pid {parts[1]})"
+    return tool
 
 
 def run_web(

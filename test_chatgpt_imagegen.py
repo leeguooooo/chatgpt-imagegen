@@ -2527,11 +2527,88 @@ class ChatgptWebTurnLock(unittest.TestCase):
                             with cig._chatgpt_web_turn(True, time.monotonic()):
                                 pass
                     real_sleep(0)
-        self.assertIn("waiting for another chatgpt turn", err.getvalue())
+        self.assertIn("to finish its chatgpt turn", err.getvalue())
 
-    def test_the_lock_file_is_opened_without_truncating(self):
+    def test_the_holder_writes_its_name_for_the_other_side(self):
+        # chatgpt-use reads this to say WHO it is waiting for. Format agreed as
+        # `<tool> <pid>`.
+        if not cig._HAVE_FILE_LOCK:
+            self.skipTest("no file-locking primitive on this platform")
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "chatgpt-web.lock"
+            with self._lock_at(p):
+                with cig._chatgpt_web_turn(False, time.monotonic()):
+                    first = p.read_text(encoding="utf-8").splitlines()[0].split()
+        self.assertEqual(first[0], "chatgpt-imagegen")
+        self.assertEqual(int(first[1]), os.getpid())
+
+    def test_the_waiter_names_the_holder(self):
+        if not cig._HAVE_FILE_LOCK:
+            self.skipTest("no file-locking primitive on this platform")
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as td:
+            with self._lock_at(Path(td) / "chatgpt-web.lock"):
+                with cig._chatgpt_web_turn(False, time.monotonic()):
+                    real_sleep = time.sleep
+
+                    def fake_sleep(s):
+                        raise _Escape()
+
+                    with unittest.mock.patch.object(time, "sleep", fake_sleep), \
+                         redirect_stderr(err):
+                        with self.assertRaises(_Escape):
+                            with cig._chatgpt_web_turn(True, time.monotonic()):
+                                pass
+                    real_sleep(0)
+        self.assertIn("chatgpt-imagegen", err.getvalue())
+        self.assertIn(str(os.getpid()), err.getvalue())
+
+    def test_an_unnamed_or_foreign_holder_is_described_not_crashed_on(self):
+        # The warn-and-proceed paths leave the file EMPTY on purpose, and an old
+        # holder may predate the convention — neither is an error.
+        with tempfile.TemporaryDirectory() as td:
+            for content, expected in [
+                ("", "another chatgpt tool"),
+                ("\n", "another chatgpt tool"),
+                ("chatgpt-use 4321\n", "chatgpt-use (pid 4321)"),
+                ("chatgpt-use\n", "chatgpt-use"),          # bare tool name
+                ("garbage not-a-pid\n", "garbage"),        # first field only
+            ]:
+                p = Path(td) / "h.lock"
+                p.write_text(content, encoding="utf-8")
+                with open(p, "r+") as f:
+                    self.assertEqual(cig._chatgpt_web_holder(f), expected,
+                                     f"for {content!r}")
+
+    def test_a_longer_previous_holder_cannot_corrupt_our_line(self):
+        # We do not truncate (Windows sharing violation), so a longer remnant
+        # must land on line 2 rather than trailing our own name.
+        if not cig._HAVE_FILE_LOCK:
+            self.skipTest("no file-locking primitive on this platform")
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "chatgpt-web.lock"
+            p.write_text("some-very-long-previous-holder-name 999999999\n",
+                         encoding="utf-8")
+            with self._lock_at(p):
+                with cig._chatgpt_web_turn(False, time.monotonic()):
+                    with open(p, "r+") as f:
+                        holder = cig._chatgpt_web_holder(f)
+        self.assertEqual(holder, f"chatgpt-imagegen (pid {os.getpid()})")
+
+    def test_the_lock_file_is_never_truncated(self):
+        # Truncating a byte-range-locked file is a sharing violation on Windows.
         src = inspect.getsource(cig._chatgpt_web_turn)
-        self.assertIn('open(path, "a+")', src)
+        self.assertNotIn("truncate()", src)
+
+    def test_the_lock_file_is_opened_without_truncating_or_appending(self):
+        # O_TRUNC would be a Windows sharing violation on a locked file; O_APPEND
+        # would make seek(0) a no-op, so the holder name would be appended after
+        # a previous holder's line and readers would report a stale holder.
+        src = inspect.getsource(cig._chatgpt_web_turn)
+        self.assertIn("os.O_RDWR | os.O_CREAT", src)
+        self.assertNotIn("os.O_TRUNC", src)
+        self.assertNotIn("os.O_APPEND", src)
+        self.assertNotIn('open(path, "a+")', src)
         self.assertNotIn('open(path, "w")', src)
 
     def test_the_whole_generation_is_inside_the_lock(self):
