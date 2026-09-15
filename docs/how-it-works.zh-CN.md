@@ -1,4 +1,4 @@
-# chatgpt-imagegen 工作原理(技术)
+# image-use 工作原理(技术)
 
 [← 返回 README](../README.zh-CN.md)
 
@@ -11,16 +11,16 @@ OpenAI 的图像生成有两条完全独立的路:
 | **直连 API**（`/v1/images/generations`） | 按张计费,需要 `OPENAI_API_KEY` | curl / OpenAI SDK 等 |
 | **ChatGPT 订阅**（Plus / Pro / Team） | 每月固定费 | ChatGPT 网页/桌面 app,或 Codex CLI 内置的 `image_gen` |
 
-对不用 Codex CLI 的人来说,订阅这条路是隐形的。它跑在 ChatGPT 内部的 `backend-api/codex/responses` 接口上(作为 Responses-API 工具),用 `codex login` 写进 `~/.codex/auth.json` 的 OAuth token 鉴权。`chatgpt-imagegen` 把这份能力搬到命令行、也给任意 AI agent 用 —— 并提供两个后端,分别命中你订阅里的不同部分。
+对不用 Codex CLI 的人来说,订阅这条路是隐形的。它跑在 ChatGPT 内部的 `backend-api/codex/responses` 接口上(作为 Responses-API 工具),用 `codex login` 写进 `~/.codex/auth.json` 的 OAuth token 鉴权。`image-use` 把这份能力搬到命令行、也给任意 AI agent 用 —— 并提供两个后端,分别命中你订阅里的不同部分。
 
-<img src="./two-backends.svg" width="760" alt="chatgpt-imagegen —— web 与 codex 后端流程">
+<img src="./two-backends.svg" width="760" alt="image-use —— web 与 codex 后端流程">
 
 ## `web` 后端(默认)
 
 经 [`chrome-use`](https://github.com/leeguooooo/chrome-use) 驱动你登录的浏览器,让出图跑在消费级 ChatGPT 界面上 —— 无头客户端够不着。防线分三层:Cloudflare 边缘和 sentinel 工作量证明(`backend-api/sentinel/chat-requirements` + 页面内 `sentinel/sdk.js` 算 token)裸客户端**都能过**,真正过不了的是 **Cloudflare Turnstile** token —— 这个交互式 token 只能由真浏览器现场产出,且单次有效,没有"取了 token 再 headless"的捷径。流程:
 
 ```
-chatgpt-imagegen --backend web
+image-use --backend web
    │
    ├── chrome-use open https://chatgpt.com/      (普通对话 —— Temporary Chat 禁用了出图工具)
    ├── 解析 ChatGPT 项目 (--project)              (页面内 fetch:gizmos/snorlax/sidebar 列项目,
@@ -49,10 +49,10 @@ Codex CLI 内置的 `image_gen` 能力是一个原生 Responses-API 工具:
 }
 ```
 
-服务器回一条 SSE 流,其 `response.output_item.done` 事件携带 `item.type === "image_generation_call"` 负载,其中 `item.result` 是 base64 PNG。`chatgpt-imagegen` 就是这么做的:
+服务器回一条 SSE 流,其 `response.output_item.done` 事件携带 `item.type === "image_generation_call"` 负载,其中 `item.result` 是 base64 PNG。`image-use` 就是这么做的:
 
 ```
-chatgpt-imagegen
+image-use
    │
    ├── 读 ~/.codex/auth.json     (OAuth access_token、account_id、refresh_token)
    ├── 读 ~/.codex/version.json  (codex CLI 版本 → 匹配服务器预期)

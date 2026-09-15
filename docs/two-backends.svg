@@ -14,7 +14,7 @@
   <rect x="0" y="0" width="960" height="470" fill="#ffffff"/>
 
   <!-- title -->
-  <text x="30" y="38" font-size="20" font-weight="700" fill="#1f2328">chatgpt-imagegen — two backends, one ChatGPT account</text>
+  <text x="30" y="38" font-size="20" font-weight="700" fill="#1f2328">image-use — two backends, one ChatGPT account</text>
   <text x="30" y="60" font-size="13" fill="#656d76">Default <tspan font-family="ui-monospace,Menlo,monospace" fill="#1f2328">auto</tspan> prefers web (spares Codex usage); falls back to codex only when no logged-in browser is reachable.</text>
 
   <!-- start: CLI -->

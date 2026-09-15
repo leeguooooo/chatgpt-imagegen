@@ -1,4 +1,4 @@
-# How chatgpt-imagegen works (technical)
+# How image-use works (technical)
 
 [← back to README](../README.md)
 
@@ -11,16 +11,16 @@ OpenAI offers image generation in two completely separate ways:
 | **Direct API** (`/v1/images/generations`) | per-image, on top of an `OPENAI_API_KEY` | curl / OpenAI SDK / etc. |
 | **ChatGPT subscription** (Plus / Pro / Team) | flat monthly fee | ChatGPT web/desktop app, or the Codex CLI's built-in `image_gen` |
 
-The subscription path is invisible to people who don't use the Codex CLI. It runs on ChatGPT's internal `backend-api/codex/responses` endpoint as a Responses-API tool, authenticated by the OAuth token written into `~/.codex/auth.json` when you run `codex login`. `chatgpt-imagegen` exposes that capability on the command line and to any AI agent — with two backends that hit different parts of your subscription.
+The subscription path is invisible to people who don't use the Codex CLI. It runs on ChatGPT's internal `backend-api/codex/responses` endpoint as a Responses-API tool, authenticated by the OAuth token written into `~/.codex/auth.json` when you run `codex login`. `image-use` exposes that capability on the command line and to any AI agent — with two backends that hit different parts of your subscription.
 
-<img src="./two-backends.svg" width="760" alt="chatgpt-imagegen — web vs codex backend flow">
+<img src="./two-backends.svg" width="760" alt="image-use — web vs codex backend flow">
 
 ## `web` backend (default)
 
 Drives your logged-in browser via [`chrome-use`](https://github.com/leeguooooo/chrome-use) so generation runs on the consumer ChatGPT surface — which a headless client can't reach. The gate has three layers: Cloudflare's edge check and a sentinel proof-of-work (`backend-api/sentinel/chat-requirements` + an in-page `sentinel/sdk.js`) are both passable by a bare client, but a **Cloudflare Turnstile** token isn't — that interactive token can only come from a real browser, and it's single-use, so there's no "grab the token then go headless" shortcut. The flow:
 
 ```
-chatgpt-imagegen --backend web
+image-use --backend web
    │
    ├── chrome-use open https://chatgpt.com/      (a *regular* chat — Temporary Chat disables the image tool)
    ├── resolve the ChatGPT Project (--project)    (in-page fetch: list via gizmos/snorlax/sidebar,
@@ -49,10 +49,10 @@ The Codex CLI's built-in `image_gen` skill is implemented as a native Responses-
 }
 ```
 
-The server replies with an SSE stream whose `response.output_item.done` events carry an `item.type === "image_generation_call"` payload, where `item.result` is base64 PNG. `chatgpt-imagegen` does exactly that:
+The server replies with an SSE stream whose `response.output_item.done` events carry an `item.type === "image_generation_call"` payload, where `item.result` is base64 PNG. `image-use` does exactly that:
 
 ```
-chatgpt-imagegen
+image-use
    │
    ├── reads ~/.codex/auth.json     (OAuth access_token, account_id, refresh_token)
    ├── reads ~/.codex/version.json  (codex CLI version → matches server expectations)

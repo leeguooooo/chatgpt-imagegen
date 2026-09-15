@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Unit tests for chatgpt-imagegen's pure helpers — stdlib `unittest`, no deps.
+"""Unit tests for image-use's pure helpers — stdlib `unittest`, no deps.
 
 The CLI ships as a single extension-less script, so we load it as a module via
 the SourceFileLoader trick. These cover the browser-free logic (MIME sniffing,
 version parsing, prompt building, path defaults, token extraction, the capped
 ref download) so a refactor that breaks them fails loudly.
 
-Run:  python3 -m unittest test_chatgpt_imagegen -v
+Run:  python3 -m unittest test_image_use -v
 """
 
 import argparse
@@ -29,7 +29,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 _loader = importlib.machinery.SourceFileLoader(
-    "cig", os.path.join(os.path.dirname(__file__), "chatgpt-imagegen"))
+    "cig", os.path.join(os.path.dirname(__file__), "image-use"))
 _spec = importlib.util.spec_from_loader("cig", _loader)
 cig = importlib.util.module_from_spec(_spec)
 _loader.exec_module(cig)
@@ -173,18 +173,18 @@ class UpdateNotify(unittest.TestCase):
         with _tmp_xdg(), \
              self._patched_fetch("9.9.9", {"9.9.9": "shiny new thing"}), \
              unittest.mock.patch.object(cig, "_update_runner",
-                                        return_value=["skills", "update", "chatgpt-imagegen"]), \
+                                        return_value=["skills", "update", "image-use"]), \
              unittest.mock.patch.object(cig, "_installed_script_version",
                                         return_value="9.9.9"), \
              unittest.mock.patch.object(cig.subprocess, "run", fake_run):
             msgs = []
             cig._maybe_notify_update(msgs.append, auto_update=True)
 
-        self.assertEqual(calls[0][0], ["skills", "update", "chatgpt-imagegen"])
+        self.assertEqual(calls[0][0], ["skills", "update", "image-use"])
         self.assertIs(calls[0][1]["stdout"], cig.subprocess.DEVNULL)
         self.assertIn("正在自动升级", msgs[0])
         self.assertIn("已自动升级到 v9.9.9", msgs[1])
-        self.assertNotIn("更新:chatgpt-imagegen update", "\n".join(msgs))
+        self.assertNotIn("更新:image-use update", "\n".join(msgs))
 
     def test_auto_update_failure_falls_back_to_notice(self):
         class _Res:
@@ -192,13 +192,13 @@ class UpdateNotify(unittest.TestCase):
 
         with _tmp_xdg(), self._patched_fetch("9.9.9", {"9.9.9": "change"}), \
              unittest.mock.patch.object(cig, "_update_runner",
-                                        return_value=["skills", "update", "chatgpt-imagegen"]), \
+                                        return_value=["skills", "update", "image-use"]), \
              unittest.mock.patch.object(cig.subprocess, "run", return_value=_Res()):
             msgs = []
             cig._maybe_notify_update(msgs.append, auto_update=True)
 
         self.assertIn("正在自动升级", msgs[0])
-        self.assertIn("更新:chatgpt-imagegen update", msgs[-1])
+        self.assertIn("更新:image-use update", msgs[-1])
 
     def test_update_that_does_not_replace_this_cli_falls_back_to_notice(self):
         class _Res:
@@ -206,14 +206,14 @@ class UpdateNotify(unittest.TestCase):
 
         with _tmp_xdg(), self._patched_fetch("9.9.9", {"9.9.9": "change"}), \
              unittest.mock.patch.object(cig, "_update_runner",
-                                        return_value=["skills", "update", "chatgpt-imagegen"]), \
+                                        return_value=["skills", "update", "image-use"]), \
              unittest.mock.patch.object(cig, "_installed_script_version",
                                         return_value=cig.__version__), \
              unittest.mock.patch.object(cig.subprocess, "run", return_value=_Res()):
             msgs = []
             cig._maybe_notify_update(msgs.append, auto_update=True)
 
-        self.assertIn("更新:chatgpt-imagegen update", msgs[-1])
+        self.assertIn("更新:image-use update", msgs[-1])
 
     def test_no_auto_update_keeps_notice_without_running(self):
         with _tmp_xdg(), self._patched_fetch("9.9.9", {"9.9.9": "change"}), \
@@ -224,7 +224,7 @@ class UpdateNotify(unittest.TestCase):
             cig._maybe_notify_update(msgs.append, auto_update=True)
 
         runner.assert_not_called()
-        self.assertIn("更新:chatgpt-imagegen update", msgs[0])
+        self.assertIn("更新:image-use update", msgs[0])
 
     def test_changes_since_filters_and_orders(self):
         notes = {"0.1.0": "old", "9.9.0": "mid", "9.9.9": "new"}
@@ -241,7 +241,7 @@ class UpdateNotify(unittest.TestCase):
         # Both __version__ and the newest WHATSNEW line must sit in the first 8KB,
         # since the reminder only reads that prefix of the remote script.
         head = Path(os.path.join(os.path.dirname(__file__),
-                                 "chatgpt-imagegen")).read_text(encoding="utf-8")[:8192]
+                                 "image-use")).read_text(encoding="utf-8")[:8192]
         m = re.search(r'__version__\s*=\s*"([\d.]+)"', head)
         self.assertEqual(m.group(1), cig.__version__)
         notes = cig._parse_whatsnew(head)
@@ -270,7 +270,7 @@ class SelfUpdate(unittest.TestCase):
             rc = cig._self_update()
         self.assertEqual(rc, 0)
         self.assertEqual(calls,
-                         [["/usr/bin/skills", "update", "chatgpt-imagegen"]])
+                         [["/usr/bin/skills", "update", "image-use"]])
 
     def test_missing_skills_falls_back_to_npx(self):
         """`skills` is usually only reachable via npx — that must not be a dead end."""
@@ -294,7 +294,7 @@ class SelfUpdate(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(
             calls,
-            [["/usr/bin/npx", "-y", "skills", "update", "chatgpt-imagegen"]])
+            [["/usr/bin/npx", "-y", "skills", "update", "image-use"]])
 
     def test_path_skills_wins_over_npx(self):
         """A real `skills` on PATH is cheaper than spinning up npx."""
@@ -314,7 +314,7 @@ class SelfUpdate(unittest.TestCase):
                                         return_value=(None, {})):
             cig._self_update()
         self.assertEqual(calls,
-                         [["/usr/bin/skills", "update", "chatgpt-imagegen"]])
+                         [["/usr/bin/skills", "update", "image-use"]])
 
     def test_no_runner_at_all_prints_command_and_fails(self):
         with unittest.mock.patch.object(cig.shutil, "which", return_value=None):
@@ -322,7 +322,7 @@ class SelfUpdate(unittest.TestCase):
             with redirect_stderr(buf):
                 rc = cig._self_update()
         self.assertEqual(rc, 1)
-        self.assertIn("npx -y skills update chatgpt-imagegen", buf.getvalue())
+        self.assertIn("npx -y skills update image-use", buf.getvalue())
 
     def test_propagates_nonzero_exit(self):
         class _Res:
@@ -838,16 +838,16 @@ class Color(unittest.TestCase):
             self.assertFalse(cig._use_color(self._Stream(True)))
 
     def test_non_tty_disables(self):
-        with self._env(NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None, TERM="xterm"):
+        with self._env(NO_COLOR=None, IMAGE_USE_NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None, TERM="xterm"):
             self.assertFalse(cig._use_color(self._Stream(False)))
 
     def test_tty_enables(self):
-        with self._env(NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None, TERM="xterm"):
+        with self._env(NO_COLOR=None, IMAGE_USE_NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None, TERM="xterm"):
             self.assertTrue(cig._use_color(self._Stream(True)))
 
     def test_paint_plain_when_off(self):
         # Color is off for a non-tty stream → string returned untouched.
-        with self._env(NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None):
+        with self._env(NO_COLOR=None, IMAGE_USE_NO_COLOR=None, CHATGPT_IMAGEGEN_NO_COLOR=None):
             out = cig._paint("31", "hi", stream=self._Stream(False))
             self.assertEqual(out, "hi")
 
@@ -2638,7 +2638,7 @@ class ChatgptWebTurnLock(unittest.TestCase):
     @contextmanager
     def _lock_at(self, path):
         with unittest.mock.patch.dict(
-            os.environ, {"CHATGPT_IMAGEGEN_WEB_LOCK": str(path)}
+            os.environ, {"IMAGE_USE_WEB_LOCK": str(path)}
         ):
             yield
 
@@ -2646,6 +2646,7 @@ class ChatgptWebTurnLock(unittest.TestCase):
         # Not ~/.chatgpt-imagegen/... and not ~/.chatgpt-use/... — a lock owned
         # by one tool is one the other has no reason to honour.
         with unittest.mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("IMAGE_USE_WEB_LOCK", None)
             os.environ.pop("CHATGPT_IMAGEGEN_WEB_LOCK", None)
             path = cig._chatgpt_web_lock_path()
         self.assertEqual(path, Path.home() / ".chatgpt-web.lock")
@@ -2753,7 +2754,7 @@ class ChatgptWebTurnLock(unittest.TestCase):
             with self._lock_at(p):
                 with cig._chatgpt_web_turn(False, time.monotonic()):
                     first = p.read_text(encoding="utf-8").splitlines()[0].split()
-        self.assertEqual(first[0], "chatgpt-imagegen")
+        self.assertEqual(first[0], "image-use")
         self.assertEqual(int(first[1]), os.getpid())
 
     def test_the_waiter_names_the_holder(self):
@@ -2774,7 +2775,7 @@ class ChatgptWebTurnLock(unittest.TestCase):
                             with cig._chatgpt_web_turn(True, time.monotonic()):
                                 pass
                     real_sleep(0)
-        self.assertIn("chatgpt-imagegen", err.getvalue())
+        self.assertIn("image-use", err.getvalue())
         self.assertIn(str(os.getpid()), err.getvalue())
 
     def test_an_unnamed_or_foreign_holder_is_described_not_crashed_on(self):
@@ -2807,7 +2808,7 @@ class ChatgptWebTurnLock(unittest.TestCase):
                 with cig._chatgpt_web_turn(False, time.monotonic()):
                     with open(p, "r+") as f:
                         holder = cig._chatgpt_web_holder(f)
-        self.assertEqual(holder, f"chatgpt-imagegen (pid {os.getpid()})")
+        self.assertEqual(holder, f"image-use (pid {os.getpid()})")
 
     def test_the_lock_file_is_never_truncated(self):
         # Truncating a byte-range-locked file is a sharing violation on Windows.
@@ -2852,6 +2853,125 @@ class ChatgptWebTurnLock(unittest.TestCase):
         src = inspect.getsource(cig._dispatch)
         gemini = src.index('_concurrency_slot("gemini"')
         self.assertNotIn("_chatgpt_web_turn", src[:gemini])
+
+
+class EnvNames(unittest.TestCase):
+    """IMAGE_USE_* is the name; CHATGPT_IMAGEGEN_* keeps working as a fallback."""
+
+    def _clean(self, **kv):
+        env = {k: v for k, v in os.environ.items()
+               if not k.startswith(("IMAGE_USE_", "CHATGPT_IMAGEGEN_"))}
+        env.update(kv)
+        return unittest.mock.patch.dict(os.environ, env, clear=True)
+
+    def test_new_name_is_read(self):
+        with self._clean(IMAGE_USE_BACKEND="codex"):
+            self.assertEqual(cig._env("IMAGE_USE_BACKEND", "auto"), "codex")
+
+    def test_legacy_name_still_works(self):
+        with self._clean(CHATGPT_IMAGEGEN_BACKEND="web"):
+            self.assertEqual(cig._env("IMAGE_USE_BACKEND", "auto"), "web")
+
+    def test_new_name_wins_when_both_set(self):
+        with self._clean(IMAGE_USE_BACKEND="codex", CHATGPT_IMAGEGEN_BACKEND="web"):
+            self.assertEqual(cig._env("IMAGE_USE_BACKEND", "auto"), "codex")
+
+    def test_new_name_set_empty_still_wins(self):
+        # `--project ""` means "plain chat"; an empty new var must not be
+        # silently overridden by an old one left in the shell.
+        with self._clean(IMAGE_USE_PROJECT="", CHATGPT_IMAGEGEN_PROJECT="old"):
+            self.assertEqual(cig._env("IMAGE_USE_PROJECT", "imagegen"), "")
+
+    def test_default_when_neither_set(self):
+        with self._clean():
+            self.assertEqual(cig._env("IMAGE_USE_BACKEND", "auto"), "auto")
+            self.assertIsNone(cig._env("IMAGE_USE_QUALITY"))
+
+    def test_helpers_use_the_fallback(self):
+        with self._clean(CHATGPT_IMAGEGEN_KEEP_CONVERSATION="1",
+                         CHATGPT_IMAGEGEN_COMPRESSION="80",
+                         CHATGPT_IMAGEGEN_WEB_CONCURRENCY="3",
+                         CHATGPT_IMAGEGEN_MACHINE_ID="box-1"):
+            self.assertTrue(cig._env_bool("IMAGE_USE_KEEP_CONVERSATION"))
+            self.assertEqual(cig._opt_int_env("IMAGE_USE_COMPRESSION"), "80")
+            self.assertEqual(cig._backend_limit("web", 1), 3)
+            self.assertEqual(cig._upload_machine_id(), "box-1")
+        with self._clean(IMAGE_USE_WEB_CONCURRENCY="2",
+                         CHATGPT_IMAGEGEN_WEB_CONCURRENCY="3"):
+            self.assertEqual(cig._backend_limit("web", 1), 2)
+
+    def test_no_code_reads_a_legacy_name_directly(self):
+        # Every read goes through _env, so no option can lose its fallback.
+        src = Path(os.path.join(os.path.dirname(__file__), "image-use")).read_text(
+            encoding="utf-8")
+        body = "\n".join(ln for ln in src.splitlines()
+                         if not ln.startswith("# WHATSNEW["))
+        self.assertIsNone(re.search(r'"CHATGPT_IMAGEGEN_[A-Z]', body))
+        self.assertNotIn('os.environ.get("IMAGE_USE_', body)
+
+
+class SkillName(unittest.TestCase):
+    """`update` must name the skill the way the skills manager recorded it."""
+
+    def _at(self, path):
+        return unittest.mock.patch.object(cig, "__file__", path)
+
+    def test_legacy_skill_dir_keeps_the_old_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "skills" / "chatgpt-imagegen"
+            d.mkdir(parents=True)
+            with self._at(str(d / "image-use")):
+                self.assertEqual(cig._installed_skill_name(), "chatgpt-imagegen")
+
+    def test_new_skill_dir_and_checkouts_use_the_new_name(self):
+        with tempfile.TemporaryDirectory() as td:
+            for rel in ("skills/image-use", "src/chatgpt-imagegen", "bin"):
+                d = Path(td) / rel
+                d.mkdir(parents=True)
+                with self._at(str(d / "image-use")):
+                    self.assertEqual(cig._installed_skill_name(), "image-use", rel)
+
+
+class LegacyAlias(unittest.TestCase):
+    """`chatgpt-imagegen` is a thin alias that runs `image-use`."""
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    SHIM = os.path.join(HERE, "chatgpt-imagegen")
+
+    def test_alias_runs_image_use(self):
+        import subprocess
+        out = subprocess.run([sys.executable, self.SHIM, "--version"],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), f"image-use {cig.__version__}")
+
+    def test_alias_passes_args_stdio_and_exit_code(self):
+        import shutil
+        import subprocess
+        with tempfile.TemporaryDirectory() as td:
+            shim = Path(td) / "chatgpt-imagegen"
+            shutil.copy(self.SHIM, shim)
+            (Path(td) / "image-use").write_text(
+                "import sys\nprint(\"|\".join(sys.argv[1:]))\n"
+                "sys.stderr.write(sys.stdin.read())\nsys.exit(7)\n",
+                encoding="utf-8")
+            out = subprocess.run([sys.executable, str(shim), "a cat", "-o", "x.png"],
+                                 input="piped", capture_output=True, text=True,
+                                 timeout=60)
+        self.assertEqual(out.returncode, 7)
+        self.assertEqual(out.stdout.strip(), "a cat|-o|x.png")
+        self.assertEqual(out.stderr, "piped")
+
+    def test_alias_advertises_an_upgrade_to_pre_rename_installs(self):
+        # Pre-rename CLIs poll this file's URL for __version__/WHATSNEW; it has
+        # to read as newer than the last pre-rename release or they never move.
+        head = Path(self.SHIM).read_text(encoding="utf-8")[:8192]
+        m = re.search(r'^__version__\s*=\s*"([\d.]+)"', head, re.MULTILINE)
+        self.assertTrue(m)
+        self.assertGreater(cig._version_tuple(m.group(1)), (0, 27, 0))
+        self.assertLessEqual(cig._version_tuple(m.group(1)),
+                             cig._version_tuple(cig.__version__))
+        self.assertIn(m.group(1), cig._parse_whatsnew(head))
 
 
 class _Escape(Exception):

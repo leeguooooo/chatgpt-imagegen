@@ -20,6 +20,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
       # The CLI is stdlib-only — no install step, nothing to pip.
       - name: Byte-compile the CLI
-        run: python -m py_compile chatgpt-imagegen
+        run: python -m py_compile image-use chatgpt-imagegen
       - name: Run unit tests
-        run: python -m unittest test_chatgpt_imagegen -v
+        run: python -m unittest test_image_use -v

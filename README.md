@@ -1,15 +1,17 @@
-# chatgpt-imagegen
+# image-use
 
-[![CI](https://github.com/leeguooooo/chatgpt-imagegen/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/chatgpt-imagegen/actions/workflows/ci.yml)
+[![CI](https://github.com/leeguooooo/image-use/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/image-use/actions/workflows/ci.yml)
 
 **English** | [中文](./README.zh-CN.md)
 
-**Generate images with your ChatGPT subscription — no `OPENAI_API_KEY`.**
+**Generate images with the subscriptions you already have — no `OPENAI_API_KEY`.**
 
-A tiny zero-dependency Python CLI (and AI-agent skill): one file, stdlib only. Works on a **free ChatGPT account** too — the default backend just drives the normal ChatGPT web chat, where even free-tier users get image generation.
+A tiny zero-dependency Python CLI (and AI-agent skill): one file, stdlib only. It uses your ChatGPT subscription by default, falls back to Codex, and can use a Gemini subscription instead. Works on a **free ChatGPT account** too — the default backend just drives the normal ChatGPT web chat, where even free-tier users get image generation.
+
+> **Formerly `chatgpt-imagegen`.** It was renamed once it grew non-ChatGPT backends. The `chatgpt-imagegen` command still works as an alias, and every `CHATGPT_IMAGEGEN_*` environment variable is still honoured (the new `IMAGE_USE_*` name wins if both are set). Your saved styles are untouched.
 
 ```bash
-chatgpt-imagegen "a watercolor cat sitting on a windowsill" -o cat.png
+image-use "a watercolor cat sitting on a windowsill" -o cat.png
 # -> saved: cat.png  (812,344 bytes)  size=1024x1024  quality=medium
 ```
 
@@ -24,7 +26,7 @@ Needs Python 3.10+ and a ChatGPT subscription (free tier works).
 **For AI agents (recommended)** — drops the skill into Claude Code, Codex, Cursor, etc.:
 
 ```bash
-npx skills add leeguooooo/chatgpt-imagegen -g
+npx skills add leeguooooo/image-use -g
 ```
 
 Then just ask: *"画一张 …"* / *"generate a hero banner for the README"*.
@@ -32,40 +34,41 @@ Then just ask: *"画一张 …"* / *"generate a hero banner for the README"*.
 **Standalone CLI** — no `pip`, no virtualenv:
 
 ```bash
-git clone https://github.com/leeguooooo/chatgpt-imagegen
-sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
+git clone https://github.com/leeguooooo/image-use
+sudo install image-use/image-use /usr/local/bin/image-use
+sudo ln -sf image-use /usr/local/bin/chatgpt-imagegen   # optional: keep the old command name
 ```
 
-You also need **one backend** — `web` (default, drives your logged-in Chrome, spends no Codex-usage) or `codex` (headless fallback). `chatgpt-imagegen doctor` shows what's ready. → **[Backends & troubleshooting](https://drawstyle.leeguoo.com/en/docs/backends)**
+You also need **one backend** — `web` (default, drives your logged-in Chrome, spends no Codex-usage) or `codex` (headless fallback). `image-use doctor` shows what's ready. → **[Backends & troubleshooting](https://drawstyle.leeguoo.com/en/docs/backends)**
 
 Got a **Gemini** subscription too? Two more backends use it instead of OpenAI: `--backend gemini` (drives a logged-in `gemini.google.com` Chrome) and `--backend agy` (the Antigravity CLI, headless). They bill **separate quotas** from each other, so either can cover for the other. Neither is ever chosen automatically — ask by name. Pin the subscribed Chrome profile with `--gemini-profile`, since most profiles are signed in to *some* Google account. Note that Gemini **text-to-image** output carries a visible watermark in the bottom-right corner (image-to-image does not), and `--size` steers the aspect ratio there rather than the exact pixel count.
 
 ## Upgrade
 
 ```bash
-chatgpt-imagegen update
+image-use update
 ```
 
-It runs the `skills` manager for you — directly when `skills` is on PATH, through `npx` when it isn't (it usually isn't). Interactive runs check for a newer version at most once a day and upgrade automatically for the next run; failures fall back to a notice listing what changed. `CHATGPT_IMAGEGEN_NO_AUTO_UPDATE=1` disables installation but keeps the check and notice, while `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1` disables both. `--quiet`/`--no-progress` never upgrades in the background.
+It runs the `skills` manager for you — directly when `skills` is on PATH, through `npx` when it isn't (it usually isn't). Interactive runs check for a newer version at most once a day and upgrade automatically for the next run; failures fall back to a notice listing what changed. `IMAGE_USE_NO_AUTO_UPDATE=1` disables installation but keeps the check and notice, while `IMAGE_USE_NO_UPDATE_CHECK=1` disables both. `--quiet`/`--no-progress` never upgrades in the background.
 
-**On 0.23.1 or earlier?** That self-update only looked for a global `skills` and gave up when it was missing, so it cannot deliver its own fix. Bootstrap once with:
+**On 0.23.1 or earlier?** That self-update only looked for a global `skills` and gave up when it was missing, so it cannot deliver its own fix. Bootstrap once with (installs from before the rename are registered as `chatgpt-imagegen`):
 
 ```bash
 npx -y skills update chatgpt-imagegen
 ```
 
-After that `chatgpt-imagegen update` works on its own.
+After that `image-use update` works on its own.
 
 ## Usage
 
 ```bash
-chatgpt-imagegen "moody mountain sunset" -o web/hero.png --size 1536x1024
-chatgpt-imagegen "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg   # reference the subject
-chatgpt-imagegen "a different fictional person" --composition-ref photo.jpg        # borrow the framing, not the face
-chatgpt-imagegen "a robot mascot" --style doodle                                    # apply a gallery style (auto-pulled + saved)
-chatgpt-imagegen animate "a dog happily wagging its tail" --style-online snoopy --also-gif
-OUT=$(chatgpt-imagegen "icon" --quiet)                                              # capture the path
-chatgpt-imagegen "product hero" --backend codex --image-model gpt-image-2.5-sunburst --quality xhigh
+image-use "moody mountain sunset" -o web/hero.png --size 1536x1024
+image-use "make it a warm golden-hour photo, cinematic 35mm" -i photo.jpg   # reference the subject
+image-use "a different fictional person" --composition-ref photo.jpg        # borrow the framing, not the face
+image-use "a robot mascot" --style doodle                                    # apply a gallery style (auto-pulled + saved)
+image-use animate "a dog happily wagging its tail" --style-online snoopy --also-gif
+OUT=$(image-use "icon" --quiet)                                              # capture the path
+image-use "product hero" --backend codex --image-model gpt-image-2.5-sunburst --quality xhigh
 ```
 
 The last line opts into the GPT Image 2.5 knobs — `--image-model`
@@ -102,26 +105,26 @@ GIF compatibility matters. The source sprite PNG is always kept beside the
 animation. Animation post-processing needs
 [ImageMagick](https://imagemagick.org/) (`magick`); WebP output additionally
 needs [libwebp](https://developers.google.com/speed/webp/download) (`img2webp`).
-`chatgpt-imagegen doctor` reports whether both are installed.
+`image-use doctor` reports whether both are installed.
 
-Full options: `chatgpt-imagegen --help`. → **[Generate images](https://drawstyle.leeguoo.com/en/docs/generate)** · **[Styles](https://drawstyle.leeguoo.com/en/docs/styles)**
+Full options: `image-use --help`. → **[Generate images](https://drawstyle.leeguoo.com/en/docs/generate)** · **[Styles](https://drawstyle.leeguoo.com/en/docs/styles)**
 
 ## Community styles
 
 Browse and reuse art styles other people tuned — a public gallery at **[drawstyle.leeguoo.com](https://drawstyle.leeguoo.com)**. No script update needed:
 
 ```bash
-chatgpt-imagegen "a fox barista" --style-online doodle  # generate with a gallery style, nothing saved
-chatgpt-imagegen style search "watercolor mascot"       # search the gallery
-chatgpt-imagegen style publish mystyle --category cute --from-last   # share yours (one-time login)
-chatgpt-imagegen upload out.png --style doodle                      # share a result to the style's player gallery (no login, on request)
+image-use "a fox barista" --style-online doodle  # generate with a gallery style, nothing saved
+image-use style search "watercolor mascot"       # search the gallery
+image-use style publish mystyle --category cute --from-last   # share yours (one-time login)
+image-use upload out.png --style doodle                      # share a result to the style's player gallery (no login, on request)
 ```
 
 A style can pin a **character**, not just a look. Style assets carry reference images, so the same character comes back in a brand-new scene:
 
 ```bash
-chatgpt-imagegen style add pip --kind character --ref pip-ref.png
-chatgpt-imagegen "a fox barista" --style pip
+image-use style add pip --kind character --ref pip-ref.png
+image-use "a fox barista" --style pip
 ```
 
 <table>

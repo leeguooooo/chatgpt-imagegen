@@ -1,15 +1,17 @@
-# chatgpt-imagegen
+# image-use
 
-[![CI](https://github.com/leeguooooo/chatgpt-imagegen/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/chatgpt-imagegen/actions/workflows/ci.yml)
+[![CI](https://github.com/leeguooooo/image-use/actions/workflows/ci.yml/badge.svg)](https://github.com/leeguooooo/image-use/actions/workflows/ci.yml)
 
 [English](./README.md) | **中文**
 
-**用你的 ChatGPT 订阅生图 —— 不需要 `OPENAI_API_KEY`。**
+**用你已有的订阅生图 —— 不需要 `OPENAI_API_KEY`。**
 
-一个零依赖的单文件 Python 命令行工具(也是 AI-agent skill),纯 stdlib。**免费 ChatGPT 账号也能用**——默认后端就是驱动普通的 ChatGPT 网页对话,免费档也能生图。
+一个零依赖的单文件 Python 命令行工具(也是 AI-agent skill),纯 stdlib。默认走你的 ChatGPT 订阅,不可用时退到 Codex,有 Gemini 订阅也可以改用 Gemini。**免费 ChatGPT 账号也能用**——默认后端就是驱动普通的 ChatGPT 网页对话,免费档也能生图。
+
+> **原名 `chatgpt-imagegen`。** 后端不止 ChatGPT 之后改了名。`chatgpt-imagegen` 命令仍可用(兼容别名),所有 `CHATGPT_IMAGEGEN_*` 环境变量照常生效(同时设了新名 `IMAGE_USE_*` 时以新名为准)。已保存的风格不受影响。
 
 ```bash
-chatgpt-imagegen "一只坐在窗台的水彩橘猫" -o cat.png
+image-use "一只坐在窗台的水彩橘猫" -o cat.png
 # -> saved: cat.png  (812,344 bytes)  size=1024x1024  quality=medium
 ```
 
@@ -24,7 +26,7 @@ chatgpt-imagegen "一只坐在窗台的水彩橘猫" -o cat.png
 **给 AI agent 用(推荐)**——把 skill 装进 Claude Code、Codex、Cursor 等:
 
 ```bash
-npx skills add leeguooooo/chatgpt-imagegen -g
+npx skills add leeguooooo/image-use -g
 ```
 
 然后直接说:*"画一张 …"*。
@@ -32,40 +34,41 @@ npx skills add leeguooooo/chatgpt-imagegen -g
 **独立命令行**——不用 `pip`、不用虚拟环境:
 
 ```bash
-git clone https://github.com/leeguooooo/chatgpt-imagegen
-sudo install chatgpt-imagegen/chatgpt-imagegen /usr/local/bin/chatgpt-imagegen
+git clone https://github.com/leeguooooo/image-use
+sudo install image-use/image-use /usr/local/bin/image-use
+sudo ln -sf image-use /usr/local/bin/chatgpt-imagegen   # 可选:保留旧命令名
 ```
 
-还需要**一个后端**——`web`(默认,驱动你登录着的 Chrome,不花 Codex 用量)或 `codex`(无头兜底)。`chatgpt-imagegen doctor` 看哪个就绪。→ **[后端与排错](https://drawstyle.leeguoo.com/zh/docs/backends)**
+还需要**一个后端**——`web`(默认,驱动你登录着的 Chrome,不花 Codex 用量)或 `codex`(无头兜底)。`image-use doctor` 看哪个就绪。→ **[后端与排错](https://drawstyle.leeguoo.com/zh/docs/backends)**
 
 也有 **Gemini** 订阅?还有两个走 Google 账号的后端:`--backend gemini`(驱动登录着 `gemini.google.com` 的 Chrome)和 `--backend agy`(Antigravity CLI,无头)。两者**额度互相独立**,一个用完另一个还能顶上。它们都不会被自动选中,得点名使用。用 `--gemini-profile` 指定有订阅的那个 Chrome profile——因为几乎每个 profile 都登录着*某个* Google 账号,自动探测分不出来。另外注意:Gemini 的**文生图**结果右下角带可见水印(图生图没有);`--size` 在这条路上控制的是画面比例,不是精确像素数。
 
 ## 升级
 
 ```bash
-chatgpt-imagegen update
+image-use update
 ```
 
-它会替你调用 `skills` 管理器——PATH 上有 `skills` 就直接用,没有则走 `npx`(通常都没有)。交互式运行每天最多检查一次新版并自动升级,下次运行生效;失败时会退回提醒并列出变更。`CHATGPT_IMAGEGEN_NO_AUTO_UPDATE=1` 只关闭自动安装,`CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1` 连检查也关闭。`--quiet`/`--no-progress` 不会在后台升级。
+它会替你调用 `skills` 管理器——PATH 上有 `skills` 就直接用,没有则走 `npx`(通常都没有)。交互式运行每天最多检查一次新版并自动升级,下次运行生效;失败时会退回提醒并列出变更。`IMAGE_USE_NO_AUTO_UPDATE=1` 只关闭自动安装,`IMAGE_USE_NO_UPDATE_CHECK=1` 连检查也关闭。`--quiet`/`--no-progress` 不会在后台升级。
 
-**还停在 0.23.1 或更早?** 那时的自升级只找全局 `skills`,找不到就放弃,所以它没法把这个修复本身装进来。先手动破一次局:
+**还停在 0.23.1 或更早?** 那时的自升级只找全局 `skills`,找不到就放弃,所以它没法把这个修复本身装进来。先手动破一次局(改名前的安装在 skills 里登记的名字是 `chatgpt-imagegen`):
 
 ```bash
 npx -y skills update chatgpt-imagegen
 ```
 
-之后 `chatgpt-imagegen update` 就能自己跑了。
+之后 `image-use update` 就能自己跑了。
 
 ## 用法
 
 ```bash
-chatgpt-imagegen "阴郁的山间日落" -o web/hero.png --size 1536x1024
-chatgpt-imagegen "改成暖调黄昏、电影感 35mm" -i photo.jpg          # 以参考图为主体
-chatgpt-imagegen "换成另一个虚构的人" --composition-ref photo.jpg  # 只借构图,不复刻人脸
-chatgpt-imagegen "一个机器人吉祥物" --style doodle                  # 套用画廊风格(本地没有会自动拉取并保存)
-chatgpt-imagegen animate "小狗开心地摇尾巴" --style-online snoopy --also-gif
-OUT=$(chatgpt-imagegen "icon" --quiet)                             # 只拿路径(便于管道)
-chatgpt-imagegen "产品主图" --backend codex --image-model gpt-image-2.5-sunburst --quality xhigh
+image-use "阴郁的山间日落" -o web/hero.png --size 1536x1024
+image-use "改成暖调黄昏、电影感 35mm" -i photo.jpg          # 以参考图为主体
+image-use "换成另一个虚构的人" --composition-ref photo.jpg  # 只借构图,不复刻人脸
+image-use "一个机器人吉祥物" --style doodle                  # 套用画廊风格(本地没有会自动拉取并保存)
+image-use animate "小狗开心地摇尾巴" --style-online snoopy --also-gif
+OUT=$(image-use "icon" --quiet)                             # 只拿路径(便于管道)
+image-use "产品主图" --backend codex --image-model gpt-image-2.5-sunburst --quality xhigh
 ```
 
 最后一行是 GPT Image 2.5 的出图参数——`--image-model`(`sunburst` 精修 /`flare` 快而高质量)、`--quality`(`low`→`max`)、`--background transparent`、`--compression`、`--action`、`--partial-images`。这些**只对 codex 后端生效**(web/gemini 没这些控件),全部可选,且都是**请求**而非保证——保存时那行会打印后端实际用的 `model=`/`quality=`/`size=`,以它为准。
@@ -90,25 +93,25 @@ chatgpt-imagegen "产品主图" --backend codex --image-model gpt-image-2.5-sunb
 `--animation-format gif` 或 `--also-gif`。原始雪碧图 PNG 会始终保存在动图旁边。
 动画后处理需要 [ImageMagick](https://imagemagick.org/)(`magick`);输出 WebP
 还需要 [libwebp](https://developers.google.com/speed/webp/download)(`img2webp`)。
-`chatgpt-imagegen doctor` 会检查两者是否就绪。
+`image-use doctor` 会检查两者是否就绪。
 
-完整参数:`chatgpt-imagegen --help`。→ **[生成图片](https://drawstyle.leeguoo.com/zh/docs/generate)** · **[风格系统](https://drawstyle.leeguoo.com/zh/docs/styles)**
+完整参数:`image-use --help`。→ **[生成图片](https://drawstyle.leeguoo.com/zh/docs/generate)** · **[风格系统](https://drawstyle.leeguoo.com/zh/docs/styles)**
 
 ## 社区风格
 
 浏览、复用别人调好的画风——公共画廊在 **[drawstyle.leeguoo.com](https://drawstyle.leeguoo.com)**,不用更新脚本:
 
 ```bash
-chatgpt-imagegen "一只狐狸咖啡师" --style-online doodle  # 直接用画廊风格生图,本地不落盘
-chatgpt-imagegen style search "水彩 吉祥物"              # 搜索画廊
-chatgpt-imagegen style publish mystyle --category cute --from-last   # 分享你的(需一次登录)
+image-use "一只狐狸咖啡师" --style-online doodle  # 直接用画廊风格生图,本地不落盘
+image-use style search "水彩 吉祥物"              # 搜索画廊
+image-use style publish mystyle --category cute --from-last   # 分享你的(需一次登录)
 ```
 
 风格不只能固定画风,还能**固定角色**。风格资产可以绑参考图,同一个角色能在全新场景里复现:
 
 ```bash
-chatgpt-imagegen style add pip --kind character --ref pip-ref.png
-chatgpt-imagegen "一只狐狸咖啡师" --style pip
+image-use style add pip --kind character --ref pip-ref.png
+image-use "一只狐狸咖啡师" --style pip
 ```
 
 <table>

@@ -1,10 +1,13 @@
 ---
-name: "chatgpt-imagegen"
-version: "0.27.0"
+name: "image-use"
+version: "0.28.0"
 description: >-
-  Generate new raster images and looping GIF/WebP animations with the user's
-  ChatGPT subscription through the local one-file chatgpt-imagegen CLI, without
-  an API key or daemon. Use for photos, illustrations, icons, hero banners,
+  Backend-neutral image generation: create new raster images and looping
+  GIF/WebP animations through the local one-file image-use CLI (formerly
+  chatgpt-imagegen), using the user's ChatGPT subscription by default, the
+  Codex backend as fallback, or an optional Gemini subscription — no API key
+  or daemon. Triggers: image generation, generate an image, draw a picture,
+  画图, 画一张, 生成图片, 生图, 配图. Use for photos, illustrations, icons, hero banners,
   mockups, sprites, concept art, animation loops, and figures for documents,
   proposals, blog posts, or READMEs; save outputs in the workspace. Auto mode
   prefers the logged-in ChatGPT browser through chrome-use to avoid Codex usage
@@ -16,9 +19,9 @@ description: >-
   or end-user image-generation services.
 ---
 
-# chatgpt-imagegen — agent skill
+# image-use — agent skill
 
-A standalone Python CLI that produces images via the user's ChatGPT subscription. No API key, no network service, no extra config. It has **two OpenAI backends** that hit different usage buckets — pick with `--backend` — plus **two opt-in Google/Gemini backends** for users who also have a Gemini subscription.
+A standalone Python CLI that produces images via the user's existing subscriptions — ChatGPT by default, Codex as fallback, Gemini on request. (Formerly `chatgpt-imagegen`; that command still works as an alias for `image-use`.) No API key, no network service, no extra config. It has **two OpenAI backends** that hit different usage buckets — pick with `--backend` — plus **two opt-in Google/Gemini backends** for users who also have a Gemini subscription.
 
 ## Backends
 
@@ -27,7 +30,7 @@ A standalone Python CLI that produces images via the user's ChatGPT subscription
 | **`web`** | Drives the user's logged-in ChatGPT browser (via **`chrome-use`**, formerly `agent-browser-stealth`; older installs expose the same binary as `agent-browser`/`abs`) and generates in a regular chat — the same surface as typing in the app. Its real-Chrome connect is what clears Cloudflare + the sentinel proof-of-work a plain/headless client can't. | **ChatGPT conversation** — does **not** consume the metered Codex-usage limit. Works on **any** account, **including free tier** (subject to its daily image cap). | `chrome-use` installed and its extension connected to a Chrome **signed in to chatgpt.com**. | ~30–60 s; each run's chat is filed under a ChatGPT **Project** (default `imagegen`, auto-created) instead of littering the history. |
 | **`codex`** | Headless POST to `chatgpt.com/backend-api/codex/responses` with the `image_generation` tool, reusing `~/.codex/auth.json`. | **Codex-usage** (metered — this is the bucket the user usually wants to spare). | `codex login` (writes `~/.codex/auth.json`). | Fast; no browser, no history. |
 
-**Default is `auto`** (`--backend auto`, or `CHATGPT_IMAGEGEN_BACKEND`): it tries **web first** because that spares the Codex-usage limit, and falls back to **codex only when web is unavailable** — i.e. `chrome-use` isn't installed, the browser isn't reachable, or chatgpt.com isn't logged in. The two not-set-up cases are handled explicitly:
+**Default is `auto`** (`--backend auto`, or `IMAGE_USE_BACKEND`): it tries **web first** because that spares the Codex-usage limit, and falls back to **codex only when web is unavailable** — i.e. `chrome-use` isn't installed, the browser isn't reachable, or chatgpt.com isn't logged in. The two not-set-up cases are handled explicitly:
 
 - **Browser not logged in / chrome-use missing** → auto silently falls back to codex (a one-line notice prints to stderr). If codex is *also* not set up, it exits naming both fixes.
 - **codex not logged in** (`~/.codex/auth.json` absent) → auto still uses web; codex is only the fallback.
@@ -54,7 +57,7 @@ Behaviour worth knowing before recommending one:
 - **`gemini` keeps the C2PA manifest on current chrome-use.** Gemini renders results from a `blob:` src, which in-page `fetch()` still cannot read; `chrome-use download-url` now resolves the blob inside the page and writes the original bytes to disk, so the signed manifest survives. Older chrome-use rejected `blob:` outright, leaving only a canvas re-encode — that path is still the fallback and still strips metadata, and the run prints a note naming the upgrade when it has to take it. `agy` copies the file, so its manifest always survives.
 - **`--size` controls the aspect ratio on `gemini`, not the pixel count.** The chat surface has no size widget, so the ratio is requested in words — and honoured: asking square returned 1024×1024, asking 3:2 returned 1024×687, asking 2:3 returned 687×1024. What you cannot pin is the absolute resolution. With nothing requested Gemini defaults to 16:9, so the backend always asks for *something* (square when `--size` is `auto`). Real dimensions land in the run meta.
 - **The dedicated image model is selected automatically.** Before generating, the backend switches the composer to Gemini's image tool, which reports "generated using Nano Banana 2" — otherwise the prompt is answered by whatever chat model is active (seen: Flash-Lite). Best-effort: if the menu moved, the run continues on the chat default rather than failing. `--no-gemini-image-tool` skips the attempt. It does **not** remove the watermark or change the default ratio — both were checked against it directly.
-- **Pin the profile.** Nearly every Chrome profile is signed in to *some* Google account, and the cookie says nothing about which one holds the subscription — a probe run landed on an account whose "Google AI Pro subscription has expired" page has no composer at all. Set `--gemini-profile` / `CHATGPT_IMAGEGEN_GEMINI_PROFILE`. `doctor` warns when nothing is pinned.
+- **Pin the profile.** Nearly every Chrome profile is signed in to *some* Google account, and the cookie says nothing about which one holds the subscription — a probe run landed on an account whose "Google AI Pro subscription has expired" page has no composer at all. Set `--gemini-profile` / `IMAGE_USE_GEMINI_PROFILE`. `doctor` warns when nothing is pinned.
 
 ## Prerequisites
 
@@ -78,7 +81,7 @@ chrome-use extension install
 # 3. Add the Chrome extension, then restart Chrome:
 #    https://chromewebstore.google.com/detail/agent-browser-stealth/knfcmbamhjmaonkfnjhldjedeobeafmk
 # 4. Sign in to https://chatgpt.com in that Chrome
-# 5. Verify: a quick `chatgpt-imagegen "test" --backend web` should print "using current Chrome (relay)"
+# 5. Verify: a quick `image-use "test" --backend web` should print "using current Chrome (relay)"
 ```
 
 - **Repo:** https://github.com/leeguooooo/chrome-use
@@ -111,65 +114,67 @@ That writes `~/.codex/auth.json`, which the codex backend reads. No `OPENAI_API_
 ## How to invoke
 
 ```bash
-"<skill-dir>/chatgpt-imagegen" "<prompt>" [options]
+"<skill-dir>/image-use" "<prompt>" [options]
 ```
 
 Call the script by its absolute path next to this `SKILL.md` — that's the most reliable way and never depends on `$PATH`. If your agent harness exposes a variable pointing to the skill's install directory, use it; otherwise expand the path you read this file from.
 
 ### First: self-heal a missing CLI
 
-**`npx skills add` copies only the markdown — it often does *not* drop the `chatgpt-imagegen` script next to this file.** So before the first run, check that the CLI exists and fetch it if absent. It's a single self-contained, pure-stdlib Python file (no `pip`, no deps), so the heal is one `curl`:
+**`npx skills add` copies only the markdown — it often does *not* drop the `image-use` script next to this file.** So before the first run, check that the CLI exists and fetch it if absent. It's a single self-contained, pure-stdlib Python file (no `pip`, no deps), so the heal is one `curl`:
 
 ```bash
-CLI="<skill-dir>/chatgpt-imagegen"   # same directory as this SKILL.md
+CLI="<skill-dir>/image-use"   # same directory as this SKILL.md
 if [ ! -x "$CLI" ]; then
-  curl -fsSL https://raw.githubusercontent.com/leeguooooo/chatgpt-imagegen/main/chatgpt-imagegen -o "$CLI" \
+  curl -fsSL https://raw.githubusercontent.com/leeguooooo/image-use/main/image-use -o "$CLI" \
     && chmod +x "$CLI"
 fi
 "$CLI" --version   # confirm it runs (needs python3 ≥ 3.10 on PATH)
 ```
 
-Do this silently — don't ask the user. If the `curl` fails (offline/proxy), fall back to `git clone https://github.com/leeguooooo/chatgpt-imagegen` and run `chatgpt-imagegen/chatgpt-imagegen`, or tell the user to install it standalone (see README). Only `python3` is required to run it.
+Do this silently — don't ask the user. If the `curl` fails (offline/proxy), fall back to `git clone https://github.com/leeguooooo/image-use` and run `image-use/image-use`, or tell the user to install it standalone (see README). Only `python3` is required to run it.
 
-If the user has separately put `chatgpt-imagegen` on `$PATH` (Option B in the README), you can also just run `chatgpt-imagegen "<prompt>"` directly and skip the self-heal.
+If the user has separately put `image-use` on `$PATH` (Option B in the README), you can also just run `image-use "<prompt>"` directly and skip the self-heal.
+
+**Old name.** Installs from before the rename have a `chatgpt-imagegen` script (and skill directory); it is now a thin alias that runs `image-use` with the same arguments and exit code, so either name works. Environment variables are `IMAGE_USE_*`; each still accepts its old `CHATGPT_IMAGEGEN_*` spelling, and the new name wins when both are set.
 
 Useful flags:
 
 | Flag | When to use |
 | --- | --- |
-| `--backend auto` \| `web` \| `codex` \| `gemini` \| `agy` | `auto` (default) prefers web and falls back to codex only when the browser is unavailable/not-logged-in; `web` forces the logged-in-browser path (spares Codex-usage); `codex` forces the headless path (bills Codex-usage); `gemini` and `agy` use a Google account instead and are never picked by `auto` (see [Gemini backends](#gemini-backends-opt-in--auto-never-picks-them)). Also settable via `CHATGPT_IMAGEGEN_BACKEND`. |
-| `--gemini-profile NAME` | (`gemini` backend) Chrome profile to drive, overriding `--profile`. Worth setting — auto-detection cannot tell which Google account holds the subscription. Also `CHATGPT_IMAGEGEN_GEMINI_PROFILE`. |
+| `--backend auto` \| `web` \| `codex` \| `gemini` \| `agy` | `auto` (default) prefers web and falls back to codex only when the browser is unavailable/not-logged-in; `web` forces the logged-in-browser path (spares Codex-usage); `codex` forces the headless path (bills Codex-usage); `gemini` and `agy` use a Google account instead and are never picked by `auto` (see [Gemini backends](#gemini-backends-opt-in--auto-never-picks-them)). Also settable via `IMAGE_USE_BACKEND`. |
+| `--gemini-profile NAME` | (`gemini` backend) Chrome profile to drive, overriding `--profile`. Worth setting — auto-detection cannot tell which Google account holds the subscription. Also `IMAGE_USE_GEMINI_PROFILE`. |
 | `--no-gemini-image-tool` | (`gemini` backend) skip switching the composer to the dedicated image model (Nano Banana 2). Rarely wanted — the switch is already best-effort. |
 | `--no-agy-yolo` | (`agy` backend) don't pass `--dangerously-skip-permissions`. Only use it if the user has their own `permissions.allow` rules — otherwise every headless run fails. |
 | `--profile auto` \| `relay` \| `NAME` | (web) Which Chrome profile to drive. `auto` (default): use the open Chrome if it's logged in, else auto-switch to a profile that is (detected offline from the cookie DB, read-only). `relay`: only the open Chrome. `"Profile 3"`: that profile. Note: *logged in* ≠ *able to generate* — a free-tier account can still hit its daily image cap. |
 | `--session NAME` | (web) Drive a named Chrome tab group instead of the shared `chatgpt-web` session. Rarely wanted: the default is shared ON PURPOSE so the whole machine keeps ONE chatgpt.com tab. |
-| `--project NAME` | (web) ChatGPT Project to file the run's conversation under — matched by exact name, **created automatically if absent**, reused if present. Default `imagegen` (or `CHATGPT_IMAGEGEN_PROJECT`). Pass `--project ""` for a plain top-level chat. If the project step fails, the run warns and continues in a plain chat — it never blocks generation. |
+| `--project NAME` | (web) ChatGPT Project to file the run's conversation under — matched by exact name, **created automatically if absent**, reused if present. Default `imagegen` (or `IMAGE_USE_PROJECT`). Pass `--project ""` for a plain top-level chat. If the project step fails, the run warns and continues in a plain chat — it never blocks generation. |
 | `--keep-tab` | (web) Leave the ChatGPT tab open after generating (default closes it). Useful for debugging. Implies `--keep-conversation`. |
-| `--keep-conversation` | (web) Keep the ChatGPT conversation after generating. **Default deletes it** (`PATCH is_visible:false`) so the run leaves no history — it's filed under the project only transiently. Also `CHATGPT_IMAGEGEN_KEEP_CONVERSATION=1`. |
+| `--keep-conversation` | (web) Keep the ChatGPT conversation after generating. **Default deletes it** (`PATCH is_visible:false`) so the run leaves no history — it's filed under the project only transiently. Also `IMAGE_USE_KEEP_CONVERSATION=1`. |
 | `-o PATH` | Always use when you know where the file should go in the repo. |
-| `--model NAME` | (codex only) The **driver** model that reads the prompt and calls the image tool — *not* the image model (the server renders with its own, observed `gpt-image-2-codex`). It bills the metered Codex bucket, so keep it on a fast/affordable Codex-account model: default `gpt-5.6-luna`, alternatives `gpt-reserve`, `gpt-5.3-codex-spark`. A frontier coding model (`gpt-6-astra`, …) just burns the bucket. Unsupported models auto-fall-back to `gpt-5.5`. Also `CHATGPT_IMAGEGEN_MODEL`. |
+| `--model NAME` | (codex only) The **driver** model that reads the prompt and calls the image tool — *not* the image model (the server renders with its own, observed `gpt-image-2-codex`). It bills the metered Codex bucket, so keep it on a fast/affordable Codex-account model: default `gpt-5.6-luna`, alternatives `gpt-reserve`, `gpt-5.3-codex-spark`. A frontier coding model (`gpt-6-astra`, …) just burns the bucket. Unsupported models auto-fall-back to `gpt-5.5`. Also `IMAGE_USE_MODEL`. |
 | `--size 1024x1024` | Square icons / logos (verified) |
 | `--size 1536x1024` | Landscape hero banners, social cards (verified) |
 | `--size 1024x1536` | Portrait covers, mobile splashes (verified) |
 | `--size 3840x2160` or similar | 4K landscape (forwarded as-is; backend may reject — fall back to a smaller verified size on failure) |
 | `--format webp` | Smaller files for web assets |
-| `--image-model MODEL` | (codex only) Pick the GPT Image model: `gpt-image-2.5-sunburst` (precise editing) or `gpt-image-2.5-flare` (fast, high quality); older `gpt-image-2` / `gpt-image-1.5` / `gpt-image-1` / `gpt-image-1-mini` also work. Unset = the backend's own default. Also `CHATGPT_IMAGEGEN_IMAGE_MODEL`. |
-| `--quality LEVEL` | (codex only) `low` \| `medium` \| `high` \| `xhigh` \| `max` — the last two require a 2.5 model (`--image-model`). A *request*, not a guarantee; verify with the `quality=` the tool prints on save. Also `CHATGPT_IMAGEGEN_QUALITY`. |
-| `--background auto` \| `transparent` \| `opaque` | (codex only) Transparent needs png/webp (not jpeg) and may be rejected by the subscription path. Also `CHATGPT_IMAGEGEN_BACKGROUND`. |
-| `--compression 0-100` | (codex only) jpeg/webp output compression (ignored for png). Also `CHATGPT_IMAGEGEN_COMPRESSION`. |
-| `--action auto` \| `generate` \| `edit` | (codex only) Force generate-vs-edit instead of letting the model choose; useful for `--ref` edits. Also `CHATGPT_IMAGEGEN_ACTION`. |
-| `--partial-images 1-3` | (codex only) Stream progressive previews into the progress timeline. Also `CHATGPT_IMAGEGEN_PARTIAL_IMAGES`. |
+| `--image-model MODEL` | (codex only) Pick the GPT Image model: `gpt-image-2.5-sunburst` (precise editing) or `gpt-image-2.5-flare` (fast, high quality); older `gpt-image-2` / `gpt-image-1.5` / `gpt-image-1` / `gpt-image-1-mini` also work. Unset = the backend's own default. Also `IMAGE_USE_IMAGE_MODEL`. |
+| `--quality LEVEL` | (codex only) `low` \| `medium` \| `high` \| `xhigh` \| `max` — the last two require a 2.5 model (`--image-model`). A *request*, not a guarantee; verify with the `quality=` the tool prints on save. Also `IMAGE_USE_QUALITY`. |
+| `--background auto` \| `transparent` \| `opaque` | (codex only) Transparent needs png/webp (not jpeg) and may be rejected by the subscription path. Also `IMAGE_USE_BACKGROUND`. |
+| `--compression 0-100` | (codex only) jpeg/webp output compression (ignored for png). Also `IMAGE_USE_COMPRESSION`. |
+| `--action auto` \| `generate` \| `edit` | (codex only) Force generate-vs-edit instead of letting the model choose; useful for `--ref` edits. Also `IMAGE_USE_ACTION`. |
+| `--partial-images 1-3` | (codex only) Stream progressive previews into the progress timeline. Also `IMAGE_USE_PARTIAL_IMAGES`. |
 | `--style NAME` | Apply a saved asset (a style snippet and/or pinned reference images). **Repeatable** — stack a character + a style, e.g. `--style mascot --style watercolor`. See [Styles & assets](#styles--assets). Overrides any active default set for this run. |
 | `--no-style` | Skip all assets (text *and* pinned refs) for this run even if the user set an active default. |
 | `--quiet` | Use in agent contexts so stdout is *only* the saved path. Progress still streams to stderr (use `--no-progress` to silence it). |
 | `--no-progress` | Fully silence the stderr progress timeline (errors still print). |
 | `--timeout SECONDS` | Total wall-clock budget (default 300). Large/detailed images can take 2–3 min — raise it if you see a `timed out` error. |
 | `--stall-timeout SECONDS` | Max silence (no data from backend) before declaring a stall (default 120, clamped to `--timeout`). Lower it to fail faster on a hung backend; `0` disables the idle check and waits out the full `--timeout`. |
-| `-V`, `--version` | Print the CLI version and exit. Run `chatgpt-imagegen --version` to confirm which build is installed. |
+| `-V`, `--version` | Print the CLI version and exit. Run `image-use --version` to confirm which build is installed. |
 
 ### Looping animations
 
-Use `chatgpt-imagegen animate "<motion prompt>"` for a fixed-camera eight-frame
+Use `image-use animate "<motion prompt>"` for a fixed-camera eight-frame
 loop. It generates one 4×2 sprite sheet, crops it deterministically, checks for
 obvious subject drift, and defaults to animated WebP. Add `--also-gif` for both
 formats, or `--animation-format gif` for GIF only. The source sprite is kept
@@ -177,10 +182,10 @@ beside the output; `--keep-frames` also preserves all eight cropped PNGs.
 
 Animation post-processing is optional and does not affect normal image
 generation. It requires `magick` (ImageMagick); WebP additionally requires
-`img2webp` (libwebp). Run `chatgpt-imagegen doctor` before a live animation to
+`img2webp` (libwebp). Run `image-use doctor` before a live animation to
 see whether these tools and the generation backends are ready.
 
-The script prints **just the saved path on stdout** in every mode; the readable progress timeline and any errors go to **stderr**, so `OUT=$(chatgpt-imagegen "..." --quiet)` captures only the path while you still see the timeline. Each timeline line is stamped with elapsed seconds (`[ 12.3s] generating`), so a slow run is legible and a stall is obvious.
+The script prints **just the saved path on stdout** in every mode; the readable progress timeline and any errors go to **stderr**, so `OUT=$(image-use "..." --quiet)` captures only the path while you still see the timeline. Each timeline line is stamped with elapsed seconds (`[ 12.3s] generating`), so a slow run is legible and a stall is obvious.
 
 ## Styles & assets
 
@@ -192,10 +197,10 @@ An **asset** is a named, reusable look stored in `~/.config/chatgpt-imagegen/sty
 This is what lets a user **pin their own cartoon character or house style once and reuse it** — no re-passing `--ref` every time. Generation is unchanged unless the user opts in (no default out of the box).
 
 **Pinning & reusing:**
-- Pin a character from image files: `chatgpt-imagegen style add mascot "a round orange fox named Pip" --kind character --ref a.png --ref b.png` (a few angles → better consistency). The images are **copied into the asset library**, so the asset survives even if you move/delete the originals.
-- Pin the image you just liked: `chatgpt-imagegen style add mascot --from-last --kind character` (also works on `style add-ref mascot --from-last`). Flow: generate → like it → pin it → reuse.
-- Pin a pure-text style as before: `chatgpt-imagegen style add watercolor "soft watercolor, visible paper texture"`.
-- **Stack them**: `chatgpt-imagegen "Pip ordering coffee" --style mascot --style watercolor` (the same fox, in watercolor). Or set a default set: `chatgpt-imagegen style use mascot watercolor`.
+- Pin a character from image files: `image-use style add mascot "a round orange fox named Pip" --kind character --ref a.png --ref b.png` (a few angles → better consistency). The images are **copied into the asset library**, so the asset survives even if you move/delete the originals.
+- Pin the image you just liked: `image-use style add mascot --from-last --kind character` (also works on `style add-ref mascot --from-last`). Flow: generate → like it → pin it → reuse.
+- Pin a pure-text style as before: `image-use style add watercolor "soft watercolor, visible paper texture"`.
+- **Stack them**: `image-use "Pip ordering coffee" --style mascot --style watercolor` (the same fox, in watercolor). Or set a default set: `image-use style use mascot watercolor`.
 
 **Managing:**
 - `style list` — kind, a `📎N` badge for pinned refs, and `*` on the active default set.
@@ -208,17 +213,17 @@ This is what lets a user **pin their own cartoon character or house style once a
 
 ### Platform styles (drawstyle)
 
-**When the user doesn't know which style to use, point them to the gallery.** If someone asks for an image but is unsure of the look — or you're about to invent a generic style from scratch — proactively suggest they browse **https://drawstyle.leeguoo.com/** and pick one: it's a visual gallery of community art styles with live previews, browsable by category (business report / tech explainer / cute / retro comic …). Tell them to grab a style's **slug** from its card, then you generate with `--style-online <slug>` — no download, no login. You can also pick for them: run `chatgpt-imagegen style search "<what they described>"` and offer the top matches. A good line to the user: *"Not sure what look you want? Browse the styles at drawstyle.leeguoo.com and tell me which one (or a keyword), and I'll use it."*
+**When the user doesn't know which style to use, point them to the gallery.** If someone asks for an image but is unsure of the look — or you're about to invent a generic style from scratch — proactively suggest they browse **https://drawstyle.leeguoo.com/** and pick one: it's a visual gallery of community art styles with live previews, browsable by category (business report / tech explainer / cute / retro comic …). Tell them to grab a style's **slug** from its card, then you generate with `--style-online <slug>` — no download, no login. You can also pick for them: run `image-use style search "<what they described>"` and offer the top matches. A good line to the user: *"Not sure what look you want? Browse the styles at drawstyle.leeguoo.com and tell me which one (or a keyword), and I'll use it."*
 
-When the user wants a look that is not already in `chatgpt-imagegen style list`, search the community platform instead of inventing a long prompt from scratch:
+When the user wants a look that is not already in `image-use style list`, search the community platform instead of inventing a long prompt from scratch:
 
 ```bash
-chatgpt-imagegen style search "watercolor mascot" --category avatar-ip
+image-use style search "watercolor mascot" --category avatar-ip
 # fastest: generate with a gallery style directly, nothing saved locally
-chatgpt-imagegen "Pip ordering coffee" --style-online pip
+image-use "Pip ordering coffee" --style-online pip
 # or pull it into the local library to reuse offline later
-chatgpt-imagegen style pull pip
-chatgpt-imagegen "Pip ordering coffee" --style pip
+image-use style pull pip
+image-use "Pip ordering coffee" --style pip
 ```
 
 - `style search <keywords> [--category X] [--tag Y]` discovers styles on `drawstyle.leeguoo.com`.
@@ -231,12 +236,12 @@ chatgpt-imagegen "Pip ordering coffee" --style pip
 **Proactively offer to publish a good style.** When you have crafted a reusable style that works well — or the user says a generated look is great and wants it again later — suggest sharing it to the gallery so others (and the user's future self) can `style pull` it in one command. Publishing is one line (the most-recent generation becomes the example image):
 
 ```bash
-chatgpt-imagegen style publish mystyle --category cute --from-last
+image-use style publish mystyle --category cute --from-last
 ```
 
 It prints a summary before uploading and a link to track approval. Note: **publishing needs a one-time browser login** (it opens automatically and caches the token); `style search` and `style pull` do **not** need login. Don't publish without the user's go-ahead — offer, then let them confirm.
 
-**Showing off a result (player gallery) — only on request.** Uploading is a **separate, user-initiated** step; generation never posts anything on its own. When the user *asks* to share a result next to a style, run `chatgpt-imagegen upload <IMG> --style <slug>` (no login, ≤5 MB — an over-cap file is downscaled once via `sips`, then fails loudly, 10/machine/UTC-day). It prints the public `/img/…` URL, the style's gallery link, and the remaining quota; a site admin may later promote the image to the cover. Do **not** auto-upload, and do not add an upload to a generation run — offer it and wait for a clear yes.
+**Showing off a result (player gallery) — only on request.** Uploading is a **separate, user-initiated** step; generation never posts anything on its own. When the user *asks* to share a result next to a style, run `image-use upload <IMG> --style <slug>` (no login, ≤5 MB — an over-cap file is downscaled once via `sips`, then fails loudly, 10/machine/UTC-day). It prints the public `/img/…` URL, the style's gallery link, and the remaining quota; a site admin may later promote the image to the cover. Do **not** auto-upload, and do not add an upload to a generation run — offer it and wait for a clear yes.
 
 Legacy `styles.json` files (text-only entries from older versions) keep working and upgrade automatically on the next change.
 
@@ -253,7 +258,7 @@ Legacy `styles.json` files (text-only entries from older versions) keep working 
 1. **Clarify** the prompt enough to write 1–3 sentences: subject, style, composition, mood, constraints. Don't over-augment when the user's prompt is already specific.
 2. **Pick size and format** based on intended use (see table above).
 3. **Pick the output path** inside the workspace.
-4. **Run** `chatgpt-imagegen "<prompt>" -o <path> --size <wxh> --quiet`.
+4. **Run** `image-use "<prompt>" -o <path> --size <wxh> --quiet`.
 5. **Inspect the result** if you can (e.g. with a `view_image` tool or by reading the file). If clearly wrong, iterate with a single targeted prompt change — do not loop blindly (each call costs subscription quota).
 6. **Report the saved path** plus the final prompt used.
 
@@ -263,7 +268,7 @@ When you're authoring a document, blog post, technical proposal, design doc, or 
 
 1. **Announce a brief plan first.** In one or two lines, say where figures will go and what each depicts (e.g. *"I'll add two figures: (1) the request→SSE flow, (2) the token-refresh path."*). Then generate — don't wait for approval; the plan is the reader's chance to redirect.
 2. **Fan out background subagents — one per figure.** Each runs the CLI with `--quiet -o <path>` so stdout is just the saved path; keep writing the prose while they render, and embed each image when it lands. Spawn them as background tasks with your own agent/task tooling — one figure per task, never blocking the writing.
-3. **Parallelism depends on the user's backend — don't override it.** Honour the user's `--backend` / `CHATGPT_IMAGEGEN_BACKEND` (default `auto`). On the **`web`** backend, concurrency is **1** — background figures **queue** and render one at a time (still fine: it's in the background, and it spends no Codex-usage). On **`codex`**, up to **4** render in parallel but each bills the metered Codex-usage bucket. Which backend to spend is the user's trade-off, not yours.
+3. **Parallelism depends on the user's backend — don't override it.** Honour the user's `--backend` / `IMAGE_USE_BACKEND` (default `auto`). On the **`web`** backend, concurrency is **1** — background figures **queue** and render one at a time (still fine: it's in the background, and it spends no Codex-usage). On **`codex`**, up to **4** render in parallel but each bills the metered Codex-usage bucket. Which backend to spend is the user's trade-off, not yours.
 4. **Choose a style to fit the document's tone.** There's no default illustration style, and none ship built in — styles come from the gallery. For informal or blog-style explainers, the **`doodle`** gallery style fits well — deliberately crude, content-accurate (`--style doodle` auto-pulls it). For Chinese-article concept figures (turning a judgment, flow, or metaphor into one memorable picture), the **`xiaohei`** style fits — white background, hand-drawn black ink, a 小黑 character acting out the idea (`--style xiaohei`). For polished specs, pick a cleaner look or a style you've defined (see [Styles & assets](#styles--assets)). **Unsure which look fits? Browse the community gallery at https://drawstyle.leeguoo.com/ (or `style search`) and use one with `--style-online <slug>`, or `--style <slug>` to keep it.** To keep one character or look consistent across a document's figures, pin it as an asset and stack it with `--style`.
 5. **Don't over-illustrate.** At most one figure per major concept; never decorate for its own sake; and **never loop generating "variants" of the same figure** — that just burns subscription quota. If a figure comes out wrong, change the prompt once and regenerate, don't spray.
 
@@ -281,23 +286,23 @@ A vague prompt yields a useless figure. Make the prompt describe the figure's **
 - **Image quality/background are backend-decided by default.** `--quality` (`low`/`medium`/`high`/`xhigh`/`max`) and `--background transparent`/`opaque` are **opt-in, codex-only** knobs (the web and gemini surfaces have no such controls and the CLI warns when you pass them anyway). `xhigh`/`max` and transparent require a GPT Image 2.5 model, so pair them with `--image-model gpt-image-2.5-sunburst` (or `-flare`). Treat them as *requests*: the Codex OAuth path has been observed normalising model/size/quality server-side, so the saved line prints the `model=` / `quality=` / `size=` the backend actually used — trust that, not the flag. If the user needs a guaranteed `quality=high` or a true transparent PNG, route them to the official `/v1/images/generations` API with their own `OPENAI_API_KEY`.
 - **On the `codex` backend those image knobs never survive.** The server rewrites the tool outright — measured: `model`→`gpt-image-2-codex`, `quality`/`size`/`background`→`auto`, `output_compression`→`100` — so `--image-model`/`--quality`/`--background`/`--compression` are effectively no-ops there. The CLI now prints the effective `model=` and the run's `tokens=… (in … / out …)`, and warns when a requested knob was rewritten. The only lever that matters on codex is `--model` (the driver): a fast/affordable Codex model keeps the metered cost down; a frontier coding model buys no better image. Token cost is dominated by **input** (the prompt + style snippet, re-sent every run), so a huge style is the expensive part — not the image.
 - A single image typically takes **15–60 s**, but large or detailed ones occasionally run **2–3 min**. The default `--timeout` is 300 s to cover this; a genuine hang is caught sooner by the `--stall-timeout` idle window (default 120 s).
-- **Per-backend concurrency caps** (cross-process, flock slot pool; excess runs queue safely, waiters print "waiting…", and `--timeout` starts only once a slot is acquired): `web` = **1** (the page surface rate-limits aggressively — "Too many requests"; also one shared Chrome), `codex` = **4** (measured safe on Plus, capped so big fan-outs can't trip the account limiter). Override via `CHATGPT_IMAGEGEN_WEB_CONCURRENCY` / `CHATGPT_IMAGEGEN_CODEX_CONCURRENCY` (`0` = unlimited). Raising the `web` cap does not make `web` runs parallel: the cross-tool chatgpt.com lock below still runs them one at a time. For parallel batches use `--backend codex` + shell `&` + `wait`; firing parallel `web` runs is safe but executes one at a time. Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
+- **Per-backend concurrency caps** (cross-process, flock slot pool; excess runs queue safely, waiters print "waiting…", and `--timeout` starts only once a slot is acquired): `web` = **1** (the page surface rate-limits aggressively — "Too many requests"; also one shared Chrome), `codex` = **4** (measured safe on Plus, capped so big fan-outs can't trip the account limiter). Override via `IMAGE_USE_WEB_CONCURRENCY` / `IMAGE_USE_CODEX_CONCURRENCY` (`0` = unlimited). Raising the `web` cap does not make `web` runs parallel: the cross-tool chatgpt.com lock below still runs them one at a time. For parallel batches use `--backend codex` + shell `&` + `wait`; firing parallel `web` runs is safe but executes one at a time. Do not loop blindly for "variants of the same prompt" — that just burns quota; iterate on the prompt instead.
 - **One chatgpt.com tab per machine.** `web` runs take a cross-TOOL advisory lock at `~/.chatgpt-web.lock` for the whole generation and drive a single stable chrome-use session named `chatgpt-web`, shared with [`chatgpt-use`](https://github.com/leeguooooo/chatgpt-use). This is not tidiness: ChatGPT pushes an "Image created" toast into *every* open chatgpt.com tab when *any* conversation on the account finishes an image, so a second tab can leak a sibling conversation's image into your run (issue #7), and two processes sharing one composer concatenate their prompts. The account also rate-limits on tab count alone. Anything else you write that automates chatgpt.com should take the same lock and session name.
 - Subscription quota is **shared** with the user's interactive ChatGPT use. Don't bulk-generate (>10 images / minute sustained) without permission — you'll hit per-day caps.
 
 ## Error handling
 
-**First step for any "which backend / why isn't web working" failure:** run `chatgpt-imagegen doctor`. It reports, read-only, the CLI's own version vs. the latest on `main`, whether each backend is set up (codex token; chrome-use installed + version; relay connected; logged-in Chrome profiles), and **which one `auto` would pick** — turning a vague "no logged-in browser" into a precise checklist.
+**First step for any "which backend / why isn't web working" failure:** run `image-use doctor`. It reports, read-only, the CLI's own version vs. the latest on `main`, whether each backend is set up (codex token; chrome-use installed + version; relay connected; logged-in Chrome profiles), and **which one `auto` would pick** — turning a vague "no logged-in browser" into a precise checklist.
 
 **Automatic updates.** `skills` has no scheduler of its own, so an interactive CLI run checks `main` at most once a day. When a newer version exists it invokes the same `skills update` path as the explicit command, then uses the new code on the next run. If automatic installation is unavailable or fails, it falls back to a short stderr notice that **lists what changed** since your version:
 
 ```
-提示:chatgpt-imagegen 0.14.0 可用(当前 0.12.0)。更新:chatgpt-imagegen update
+提示:image-use 0.14.0 可用(当前 0.12.0)。更新:image-use update
   • 0.14.0:更新提示现在会列出每个新版本改了什么
   • 0.13.0:新增每天一次的新版本提示…
 ```
 
-It never touches stdout and is skipped under `--quiet`/`--no-progress`; `doctor` checks unconditionally and prints the same change list. To turn checking off entirely, set `CHATGPT_IMAGEGEN_NO_UPDATE_CHECK=1`. To keep the daily check and notice but disable automatic installation, set `CHATGPT_IMAGEGEN_NO_AUTO_UPDATE=1`. When you see the fallback notice, run `chatgpt-imagegen update` — it runs the `skills` manager for you, through npx when `skills` isn't on PATH (it usually isn't), so it works without a global install (or re-run the self-heal `curl`).
+It never touches stdout and is skipped under `--quiet`/`--no-progress`; `doctor` checks unconditionally and prints the same change list. To turn checking off entirely, set `IMAGE_USE_NO_UPDATE_CHECK=1`. To keep the daily check and notice but disable automatic installation, set `IMAGE_USE_NO_AUTO_UPDATE=1`. When you see the fallback notice, run `image-use update` — it runs the `skills` manager for you, through npx when `skills` isn't on PATH (it usually isn't), so it works without a global install (or re-run the self-heal `curl`).
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
@@ -336,13 +341,13 @@ Why the web surface is reachable only through a real browser: the consumer `back
 
 This tool is used mostly *through other people's agents*, so **maintainers rarely see failures directly — the agent running it is the main way bugs surface.** When you hit something that looks like a tool bug, help get it reported instead of silently working around it.
 
-- **What's worth reporting:** a crash/traceback, a backend that *should* work but doesn't, wrong or garbled output, a misleading/wrong error message, a `web`/`chrome-use` failure that `chatgpt-imagegen doctor` says should be fine, or behavior that contradicts this SKILL.
+- **What's worth reporting:** a crash/traceback, a backend that *should* work but doesn't, wrong or garbled output, a misleading/wrong error message, a `web`/`chrome-use` failure that `image-use doctor` says should be fine, or behavior that contradicts this SKILL.
 - **What's NOT a bug (handle, don't file):** the user simply isn't logged in or hasn't installed a backend (setup — point them at `doctor` + the install steps), or a deliberate content refusal by the model.
-- **How:** offer to file it — or hand the user a ready-to-paste report — at **https://github.com/leeguooooo/chatgpt-imagegen/issues**. Search open issues first to avoid duplicates. Include:
+- **How:** offer to file it — or hand the user a ready-to-paste report — at **https://github.com/leeguooooo/image-use/issues**. Search open issues first to avoid duplicates. Include:
   - the exact command you ran,
-  - `chatgpt-imagegen -V` (version),
+  - `image-use -V` (version),
   - the full error text / unexpected output,
-  - the output of `chatgpt-imagegen doctor`.
+  - the output of `image-use doctor`.
 - A 30-second issue with a repro is worth far more than a quiet workaround — it's how this tool gets fixed.
 
 ## Related
