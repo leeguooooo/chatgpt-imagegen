@@ -67,13 +67,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-__version__ = "0.28.0"
+__version__ = "0.29.0"
 
 # What's-new, newest first — one terse line per release. The update reminder
 # surfaces these so a user learns WHAT changed, not just that a newer version
 # exists. Kept as flat, easy-to-regex comments near the top so the remote copy
 # can be parsed from the same 8KB prefix the reminder already reads — no extra
 # file to drift, no import needed. Format: `# WHATSNEW[<version>]: <summary>`.
+# WHATSNEW[0.29.0]: 修好 web 后端的多行提示词与多参考图——提示词改为整段粘贴(旧的逐键输入会把换行当发送,拆成多条消息),发送前核对编辑器里的完整文本、等所有参考图真正传完服务端才点一次发送,结果不确定时只报告不重发;未发送就中止的运行会清掉自己粘贴的草稿,不再让下一次运行卡在「输入框非空」(#34)
 # WHATSNEW[0.28.0]: 改名 image-use(现有 ChatGPT 网页 / Codex / 两个 Gemini 后端,不再只是 ChatGPT);`chatgpt-imagegen` 命令保留为兼容别名,CHATGPT_IMAGEGEN_* 环境变量继续有效(新名 IMAGE_USE_* 优先),风格库与配置目录不变
 # WHATSNEW[0.27.0]:上传改为独立子命令 `chatgpt-imagegen upload IMG --style SLUG`,**生成流程不再自动推送**(是否上传由用户看到结果后自己决定);输出补上该风格画廊页链接与今日剩余额度;machine id 默认用纯 hostname
 # WHATSNEW[0.26.0]: 新增匿名上传到 drawstyle 玩家画廊——`style upload IMG --style SLUG` 子命令,以及生成时的 `--upload [SLUG]` 旗标;复用 /api/uploads(免登录,≤5MB,10 次/机器/天),超限先 sips 压缩一次,输出返回直链与今日剩余额度
