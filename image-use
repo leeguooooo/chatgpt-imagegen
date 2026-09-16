@@ -2210,7 +2210,7 @@ def _upload_references(ab, session, ref_paths, remaining, emit) -> None:
     initial = _web_composer_state(ab, session, remaining)
     if initial.get("text"):
         raise GatewayError("ChatGPT composer is not empty; references not uploaded. "
-                           "Start a fresh chat to avoid mixing with an existing draft.")
+                           + _DRAFT_HINT)
     if initial.get("attachments"):
         raise GatewayError("ChatGPT composer already has attachments; use a fresh chat "
                            "to avoid mixing or duplicating references")
@@ -2234,6 +2234,21 @@ def _upload_references(ab, session, ref_paths, remaining, emit) -> None:
         return
 
 
+# ChatGPT restores an unsent composer draft in every new chat, so a draft left
+# behind by a failed run blocks the next one at the empty-composer check.
+_DRAFT_HINT = ("Clear the ChatGPT composer at https://chatgpt.com/ (a leftover draft "
+               "is restored in new chats) or start a fresh chat, then retry.")
+
+
+def _clear_web_composer(ab, session, remaining) -> None:
+    """Best-effort: empty the composer so our own text is not left as a draft."""
+    try:
+        _ab(ab, "fill", "#prompt-textarea", "--stdin", input_text="",
+            session=session, timeout=min(20.0, remaining()))
+    except GatewayError:
+        pass
+
+
 def _submit_web_prompt(ab, session, user_text, n_refs, remaining, emit) -> None:
     """Paste, verify exact editor text and attachments, then click Send once.
 
@@ -2243,32 +2258,39 @@ def _submit_web_prompt(ab, session, user_text, n_refs, remaining, emit) -> None:
     """
     initial = _web_composer_state(ab, session, remaining)
     if initial.get("text"):
-        raise GatewayError("ChatGPT composer is not empty; prompt not submitted. "
-                           "Start a fresh chat to avoid overwriting an existing draft.")
+        raise GatewayError("ChatGPT composer is not empty; prompt not submitted. " + _DRAFT_HINT)
     emit("pasting prompt")
     _ab(ab, "fill", "#prompt-textarea", "--stdin", input_text=user_text,
         session=session, timeout=min(60.0, remaining()))
-    ready_deadline = time.monotonic() + min(30.0, remaining())
-    for _ in range(30):
-        state = _web_composer_state(ab, session, remaining)
-        if state.get("user_turns") != initial.get("user_turns"):
-            raise GatewayError("ChatGPT submitted while entering the prompt; "
-                               "stopped without sending again. Check the conversation.")
-        if state.get("text") != user_text:
-            raise GatewayError(
-                f"ChatGPT composer text differs from the supplied prompt "
-                f"(expected {len(user_text)} characters, got "
-                f"{len(state.get('text') or '')}); prompt not submitted.")
-        if state.get("attachments") != n_refs or state.get("ready") != n_refs:
-            raise GatewayError("ChatGPT attachments changed before sending; "
-                               "prompt not submitted. Check the reference uploads.")
-        if state.get("send_ready") and not state.get("busy"):
-            break
-        if time.monotonic() >= ready_deadline:
+    # Everything below until the click is a "nothing was sent" failure. ChatGPT
+    # keeps composer drafts across chats, so leaving our text in the box would
+    # make every LATER run stop at the empty-composer check above until the user
+    # clears it by hand — undo the paste before propagating.
+    try:
+        ready_deadline = time.monotonic() + min(30.0, remaining())
+        for _ in range(30):
+            state = _web_composer_state(ab, session, remaining)
+            if state.get("user_turns") != initial.get("user_turns"):
+                raise GatewayError("ChatGPT submitted while entering the prompt; "
+                                   "stopped without sending again. Check the conversation.")
+            if state.get("text") != user_text:
+                raise GatewayError(
+                    f"ChatGPT composer text differs from the supplied prompt "
+                    f"(expected {len(user_text)} characters, got "
+                    f"{len(state.get('text') or '')}); prompt not submitted.")
+            if state.get("attachments") != n_refs or state.get("ready") != n_refs:
+                raise GatewayError("ChatGPT attachments changed before sending; "
+                                   "prompt not submitted. Check the reference uploads.")
+            if state.get("send_ready") and not state.get("busy"):
+                break
+            if time.monotonic() >= ready_deadline:
+                raise GatewayError("ChatGPT Send button did not become ready; prompt not submitted")
+            time.sleep(1.0)
+        else:
             raise GatewayError("ChatGPT Send button did not become ready; prompt not submitted")
-        time.sleep(1.0)
-    else:
-        raise GatewayError("ChatGPT Send button did not become ready; prompt not submitted")
+    except GatewayError:
+        _clear_web_composer(ab, session, remaining)
+        raise
     emit(f"verified prompt ({len(user_text)} characters) and {n_refs} reference image(s)")
     send_error = None
     try:

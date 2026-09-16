@@ -113,7 +113,9 @@ The ChatGPT browser backend pastes multiline prompts, checks the exact editor
 text, and waits for every reference upload to finish before clicking Send once.
 Incomplete uploads or altered text stop the run. If a send cannot be confirmed,
 it reports the uncertainty without sending again. Start with an empty composer;
-an existing draft is preserved.
+an existing draft is preserved. A run that stops before sending clears the text
+it pasted; if a run still reports a non-empty composer, clear the box at
+chatgpt.com — ChatGPT restores unsent drafts in new chats.
 
 ## Community styles
 

@@ -2266,7 +2266,8 @@ class WebPromptSubmission(unittest.TestCase):
         for state in bad:
             with self.subTest(state=state), self.assertRaises(cig.GatewayError):
                 self._run([_composer_state(attachments=5), state], prompt)
-            self.assertEqual([a[1] for a, _ in self.calls], ["fill"])
+            # The second fill clears the draft we pasted; Send is never clicked.
+            self.assertEqual([a[1] for a, _ in self.calls], ["fill", "fill"])
 
     def test_existing_draft_is_not_overwritten(self):
         """Leave an existing composer draft untouched without issuing commands."""
@@ -2280,7 +2281,7 @@ class WebPromptSubmission(unittest.TestCase):
         with self.assertRaisesRegex(cig.GatewayError, "did not become ready"):
             self._run([_composer_state(attachments=5),
                        _composer_state(prompt, attachments=5, send_ready=False)])
-        self.assertEqual(len(self.calls), 1)
+        self.assertNotIn("click", [a[1] for a, _ in self.calls])
 
     def test_ambiguous_send_is_checked_without_replaying(self):
         """Confirm a message after an uncertain click without sending again."""
@@ -2306,6 +2307,29 @@ class WebPromptSubmission(unittest.TestCase):
             self._run([_composer_state(attachments=5),
                        _composer_state(prompt, attachments=5), _composer_state(user_turns=2)])
         self.assertEqual(len(self.calls), 2)
+
+    def test_failed_send_clears_the_pasted_draft(self):
+        """Undo the paste when nothing was sent, so no draft blocks later runs."""
+        prompt = "first\n\n猫 🦊\nlast\n"
+        with self.assertRaisesRegex(cig.GatewayError, "did not become ready"):
+            self._run([_composer_state(attachments=5),
+                       _composer_state(prompt, attachments=5, send_ready=False)])
+        self.assertEqual([a[1] for a, _ in self.calls], ["fill", "fill"])
+        self.assertEqual(self.calls[-1][1]["input_text"], "")
+
+    def test_confirmed_send_does_not_clear_the_composer(self):
+        """Never issue a clearing fill once the prompt actually went out."""
+        prompt = "first\n\n猫 🦊\nlast\n"
+        self._run([_composer_state(attachments=5),
+                   _composer_state(prompt, attachments=5),
+                   _composer_state(user_turns=1)], prompt)
+        self.assertEqual([a[1] for a, _ in self.calls], ["fill", "click"])
+
+    def test_existing_draft_error_explains_how_to_recover(self):
+        """Point at the ChatGPT composer so a stuck draft can be cleared."""
+        with self.assertRaisesRegex(cig.GatewayError, "chatgpt.com"):
+            self._run([_composer_state("existing draft", attachments=5)])
+        self.assertEqual(self.calls, [])
 
     def test_ab_passes_prompt_on_stdin_without_adding_it_to_argv(self):
         """Pass prompt text as subprocess input rather than a command argument."""
